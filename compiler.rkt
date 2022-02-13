@@ -53,14 +53,18 @@
 
 (define (uniquify-exp env)
   (lambda (e)
+    ; (display env)
+    ; (display " ")
+    ; (display e)
+    ; (display "\n")
     (match e
-      [(Var x)
-       (error "TODO: code goes here (uniquify-exp, symbol?)")]
+      [(Var x) (Var (cadr (assoc x env)))]
       [(Int n) (Int n)]
-      [(Let x e body)
-       (error "TODO: code goes here (uniquify-exp, let)")]
-      [(Prim op es)
-       (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
+      [(Let x e body) (
+        let ([var_sampled (gensym x)])
+        (Let var_sampled ((uniquify-exp (append (list (list x var_sampled)) env)) e) ((uniquify-exp (append (list (list x var_sampled)) env)) body))
+      )]
+      [(Prim op es) (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
 
 ;; uniquify : R1 -> R1
 (define (uniquify p)
@@ -68,8 +72,24 @@
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
 ;; remove-complex-opera* : R1 -> R1
+(define (rco_atom exp) (match exp
+  [(Int i) (Int i)]
+  [(Var v) (Var v)]
+  [else exp]
+))
+
+(define (rco_exp exp) (match exp
+  [(Int i) (Int i)]
+  [(Var v) (Var v)]
+  [(Prim 'read '()) (Prim 'read '())]
+  [(Prim '- e) ]
+  [(Let var e1 e2) (Let var (rco_exp e1) (rco_exp e2))]
+))
+
 (define (remove-complex-opera* p)
-  (error "TODO: code goes here (remove-complex-opera*)"))
+  (match p
+    [(Program info e) (Program info (rco_exp e))])
+)
 
 ;; explicate-control : R1 -> C0
 (define (explicate-control p)
@@ -97,7 +117,7 @@
 (define compiler-passes
   `( ("uniquify" ,uniquify ,interp-Lvar)
      ;; Uncomment the following passes as you finish them.
-     ;; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
+     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
      ;; ("explicate control" ,explicate-control ,interp-Cvar)
      ;; ("instruction selection" ,select-instructions ,interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
