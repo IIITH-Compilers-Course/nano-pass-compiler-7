@@ -1,0 +1,21 @@
+def rco_atm(exp):
+    return exp
+
+def rco_exp(exp):
+    return exp
+
+def remove_complex(program):
+    return rco_exp(program.exp)
+
+(- e1 e2)
+(+ e1 e2)
+(- e1) -> (let temp rco(e1) (- temp))
+
+(+ e1 e2) -> (let t1 rco(e1) (let t2 rco(e2) (+ t1 t2)))
+
+(+ 42 (- 10)) - >Lvar
+(let t1 (let temp (- 10) (- temp)) (+ 42 t1)) -> lmonvar
+
+f1((+ 42 (- (- 10)))) -> (let t1 rco_exp(- (- 10)) (+ 42 t1))
+rco_atom(42) -> atomic #t
+rco_atom((- 10)) -> expression #f

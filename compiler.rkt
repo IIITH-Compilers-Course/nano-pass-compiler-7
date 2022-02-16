@@ -73,17 +73,26 @@
 
 ;; remove-complex-opera* : R1 -> R1
 (define (rco_atom exp) (match exp
-  [(Int i) (Int i)]
-  [(Var v) (Var v)]
-  [else exp]
+  [(Int i) #t]
+  [(Var v) #t]
+  [else #f]
 ))
 
-(define (rco_exp exp) (match exp
-  [(Int i) (Int i)]
-  [(Var v) (Var v)]
-  [(Prim 'read '()) (Prim 'read '())]
-  [(Prim '- e) ]
-  [(Let var e1 e2) (Let var (rco_exp e1) (rco_exp e2))]
+(define (rco_exp exp) 
+  (display exp) 
+  (display "\n")
+  (match exp
+    [(Int i) (Int i)]
+    [(Var v) (Var v)]
+    [(Prim 'read '()) (Prim 'read '())]
+    [(Prim '- (list e)) (let ([at (rco_atom e)]) (if at (Prim '- (list e)) (let ([tvar (gensym)]) (Let tvar (rco_exp e) (Prim '- (list (Var tvar)))))))]
+    [(Prim op (list e1 e2)) (let ([a1 (rco_atom e1)]) (let ([a2 (rco_atom e2)]) (cond
+      [(and a1 a2) (Prim op (list e1 e2))]
+      [(and (not a1) a2) (let ([t1 (gensym)]) (Let t1 (rco_exp e1) (Prim op (list (Var t1) e2))))]
+      [(and a1 (not a2)) (let ([t2 (gensym)]) (Let t2 (rco_exp e2) (Prim op (list e1 (Var t2)))))]
+      [(and (not a1) (not a2)) (let ([t1 (gensym)]) (let ([t2 (gensym)]) (Let t1 (rco_exp e1) (Let t2 (rco_exp e2) (Prim op (list (Var t1) (Var t2)))))))]
+    )))]
+    [(Let var e1 e2) (Let var (rco_exp e1) (rco_exp e2))]
 ))
 
 (define (remove-complex-opera* p)
