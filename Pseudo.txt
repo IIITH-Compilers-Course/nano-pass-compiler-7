@@ -19,3 +19,43 @@ def remove_complex(program):
 f1((+ 42 (- (- 10)))) -> (let t1 rco_exp(- (- 10)) (+ 42 t1))
 rco_atom(42) -> atomic #t
 rco_atom((- 10)) -> expression #f
+
+################################################################
+(let ([y (let ([x.1 20])
+(let ([x.2 22])
+(+ x.1 x.2)))])
+y) = exp
+
+explicate_tail exp
+
+(let ([x.1 20])
+(let ([x.2 22])
+(+ x.1 x.2))) = exp
+
+explicate_assign exp y (Return y)
+
+first_call = 
+
+(Let ([y ]) y)
+
+explicate_assign 20 y (Return y)
+\/
+(Seq (Assign y 20) (Return y))
+
+(Seq (Assign x.1 20)
+    (Seq (Assign x.2 22) 
+        (Seq (Assign y (+ x.2 x.2)) 
+            (Return y)
+        )
+    )
+)
+
+(Let y (Let x1 (Let x2 20 (Let x3 10 (+ x3 x2))) x1) y)
+
+explicate_tail exp
+\/
+explicate_assign y (Let x1 (Let x2 20 (Let x3 10 (+ x3 x2))) x1) (Return y)
+\/
+explicate_assign x1 (Let x2 20 (Let x3 10 (+ x3 x2))) (Seq (Assign y x1) (Return y))
+
+(Seq (Assign x1 (body)) (Seq (Assign y x1) (Return y)))

@@ -3,6 +3,7 @@
 (require racket/fixnum)
 (require "interp-Lint.rkt")
 (require "interp-Lvar.rkt")
+(require "interp-Cvar.rkt")
 (require "utilities.rkt")
 (provide (all-defined-out))
 
@@ -101,8 +102,25 @@
 )
 
 ;; explicate-control : R1 -> C0
-(define (explicate-control p)
-  (error "TODO: code goes here (explicate-control)"))
+(define (explicate-tail e) (match e
+  [(Var x) (Return (Var x))]
+  [(Int n) (Return (Int n))]
+  [(Let x rhs body) (explicate-assign rhs x (explicate-tail body))]
+  [(Prim op es) (Return (Prim op es))]
+  [else (error "explicate-tail unhandled case" e)]
+))
+
+(define (explicate-assign e x cont) (match e
+  [(Var x_int) (Seq (Assign (Var x) (Var x_int)) cont)]
+  [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
+  [(Let y rhs body) (explicate-assign rhs y (explicate-assign body x cont))]
+  [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
+  [else (error "explicate-assign unhandled case" e)]
+))
+
+(define (explicate-control p) (match p
+  [(Program info body) (CProgram info (list (cons 'start (explicate-tail body))))]
+))
 
 ;; select-instructions : C0 -> pseudo-x86
 (define (select-instructions p)
@@ -127,7 +145,7 @@
   `( ("uniquify" ,uniquify ,interp-Lvar)
      ;; Uncomment the following passes as you finish them.
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
-     ;; ("explicate control" ,explicate-control ,interp-Cvar)
+     ("explicate control" ,explicate-control ,interp-Cvar)
      ;; ("instruction selection" ,select-instructions ,interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
