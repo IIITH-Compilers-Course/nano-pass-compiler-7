@@ -1,6 +1,7 @@
 #lang racket
 (require racket/set racket/stream)
 (require racket/fixnum)
+(require "interp.rkt")
 (require "interp-Lint.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
@@ -80,7 +81,7 @@
 ))
 
 (define (rco_exp exp) 
-  (display exp) 
+  (display exp)
   (display "\n")
   (match exp
     [(Int i) (Int i)]
@@ -123,12 +124,46 @@
 ))
 
 ;; select-instructions : C0 -> pseudo-x86
-(define (select-instructions p)
-  (error "TODO: code goes here (select-instructions)"))
+(define (select-instructions-atom atm) (match atm
+  [(Int i) (Imm i)]
+  [(Var v) (Var v)]
+))
+
+(define (select-instructions-assign var exp) (display exp) (match exp
+  [(Prim 'read '()) (list (Callq 'read_int) (Instr 'movq (list (Reg 'rax) var)))]
+  [(Prim '- (list e)) (list (Instr 'movq (list (Imm '0) var)) (Instr 'subq (list (select-instructions-atom e) var)))]
+  [(Prim op (list e1 e2)) (list (Instr 'movq (list (select-instructions-atom e1) var)) (Instr (if (equal? op '+) 'addq 'subq) (list (select-instructions-atom e2) var)))]
+  [_ (list (Instr 'movq (list (select-instructions-atom exp) var)))]
+))
+
+(define (select-instructions-statement stmt) (match stmt
+  [(Return exp) (append (select-instructions-assign (Reg 'rax) exp) (list (Jmp 'end)))]
+  [(Seq (Assign var exp) cont) (append (select-instructions-assign var exp) (select-instructions-statement cont))]
+))
+
+(define (select-instructions p) (match p
+  [(CProgram info body) (X86Program info (append (for/list ([func body]) (cons (car func) (Block '() (select-instructions-statement (cdr func))))) (list (cons 'end (Block '() '())))))]
+))
 
 ;; assign-homes : pseudo-x86 -> pseudo-x86
-(define (assign-homes p)
-  (error "TODO: code goes here (assign-homes)"))
+(define var-offset-table (make-hash '()))
+
+(define (assign-homes-int stmt) (match stmt
+  [(Var v) (let ([hash-status (hash-ref var-offset-table v #f)]) (if hash-status 
+    (Deref 'rbp hash-status)
+    (begin
+      (hash-set! var-offset-table v (- (* (hash-count var-offset-table) '-8) '8))
+      (Deref 'rbp (hash-ref var-offset-table v))
+    )
+  ))]
+  [(Instr op args) (Instr op (for/list ([arg args]) (assign-homes-int arg)))]
+  [(Block info body) (Block info (for/list ([stmt-int body]) (assign-homes-int stmt-int)))]
+  [exp exp]
+))
+
+(define (assign-homes p) (match p
+  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (assign-homes-int (cdr func)))))]
+))
 
 ;; patch-instructions : psuedo-x86 -> x86
 (define (patch-instructions p)
@@ -146,8 +181,8 @@
      ;; Uncomment the following passes as you finish them.
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
      ("explicate control" ,explicate-control ,interp-Cvar)
-     ;; ("instruction selection" ,select-instructions ,interp-x86-0)
-     ;; ("assign homes" ,assign-homes ,interp-x86-0)
+     ("instruction selection" ,select-instructions ,interp-x86-0)
+     ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
