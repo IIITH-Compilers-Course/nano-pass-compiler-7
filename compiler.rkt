@@ -38,12 +38,14 @@
     [((Int n1) (Int n2)) (Int (fx+ n1 n2))]
     [(_ _) (Prim '+ (list r1 r2))]))
 
-(define (pe-exp e)
-  (match e
-    [(Int n) (Int n)]
-    [(Prim 'read '()) (Prim 'read '())]
-    [(Prim '- (list e1)) (pe-neg (pe-exp e1))]
-    [(Prim '+ (list e1 e2)) (pe-add (pe-exp e1) (pe-exp e2))]))
+(define (pe-exp e) (match e
+  [(Var v) (Var v)]
+  [(Int n) (Int n)]
+  [(Prim 'read '()) (Prim 'read '())]
+  [(Prim '- (list e1)) (pe-neg (pe-exp e1))]
+  [(Prim '+ (list e1 e2)) (pe-add (pe-exp e1) (pe-exp e2))]
+  [(Let var e1 e2) (Let var (pe-exp e1) (pe-exp e2))]
+))
 
 (define (pe-Lint p)
   (match p
@@ -176,14 +178,14 @@
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
-(define compiler-passes
-  `( ("uniquify" ,uniquify ,interp-Lvar)
-     ;; Uncomment the following passes as you finish them.
-     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
-     ("explicate control" ,explicate-control ,interp-Cvar)
-     ("instruction selection" ,select-instructions ,interp-x86-0)
-     ("assign homes" ,assign-homes ,interp-x86-0)
-     ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
-     ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
-     ))
+(define compiler-passes `(
+  ("partial evaluator", pe-Lint, interp-Lvar)
+  ("uniquify" ,uniquify ,interp-Lvar)
+  ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
+  ("explicate control" ,explicate-control ,interp-Cvar)
+  ("instruction selection" ,select-instructions ,interp-x86-0)
+  ("assign homes" ,assign-homes ,interp-x86-0)
+  ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
+  ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+))
 
