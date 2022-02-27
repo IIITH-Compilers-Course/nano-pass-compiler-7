@@ -176,12 +176,12 @@
 ))
 
 (define (select-instructions-statement stmt) (match stmt
-  [(Return exp) (append (select-instructions-assign (Reg 'rax) exp) (list (Jmp 'end)))]
+  [(Return exp) (append (select-instructions-assign (Reg 'rax) exp) (list (Jmp 'conclusion)))]
   [(Seq (Assign var exp) cont) (append (select-instructions-assign var exp) (select-instructions-statement cont))]
 ))
 
 (define (select-instructions p) (match p
-  [(CProgram info body) (X86Program info (append (for/list ([func body]) (cons (car func) (Block '() (select-instructions-statement (cdr func))))) (list (cons 'end (Block '() '())))))]
+  [(CProgram info body) (X86Program info (for/list ([func body]) (cons (car func) (Block '() (select-instructions-statement (cdr func))))))]
 ))
 
 ;; assign-homes : pseudo-x86 -> pseudo-x86
@@ -205,24 +205,45 @@
 ))
 
 ;; patch-instructions : psuedo-x86 -> x86
-(define (patch-instructions p)
-  (error "TODO: code goes here (patch-instructions)"))
+(define (patch-instructions-temp x86_body)
+  (match x86_body
+    [(Block info body) (Block info (patch-instructions-new body))]
+    ))
 
-;; prelude-and-conclusion : x86 -> x86
-(define (prelude-and-conclusion p)
-  (error "TODO: code goes here (prelude-and-conclusion)"))
+(define (patch-instructions-new cmd-list)
+  (cond [(empty? cmd-list) '()]
+        [else (match (car cmd-list)
+        [(Instr 'movq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'movq (list (Reg 'rax) (Deref 'rbp int_2) ))) (patch-instructions-new (cdr cmd-list)))]
+        [_ (append (list (car cmd-list)) (patch-instructions-new (cdr cmd-list)))])]))
+
+(define (patch-instructions p) (match p
+  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (patch-instructions-temp (cdr func)))))]
+))
+
+(define (conclusion-instructions)
+  (list (Instr 'addq (list (Imm 16) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Instr 'retq '())))
+
+(define (main-instructions)
+  (list (Instr 'pushq (list (Reg 'rbp))) (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))) (Instr 'subq (list (Imm 16) (Reg 'rsp))) (Jmp 'start)))
+
+(define (global-function)
+  (list (Instr 'globl (list 'main))))
+
+(define (prelude-and-conclusion p) (match p
+  [(X86Program info body) (X86Program info (append body (list (cons (string->symbol "") (Block '() (global-function)))) (list (cons 'main (Block '() (main-instructions)))) (list (cons 'conclusion (Block '() (conclusion-instructions))))))]))
+                                     
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
-(define compiler-passes `(
-  ("partial evaluator", pe-Lint, interp-Lvar)
-  ("uniquify" ,uniquify ,interp-Lvar)
-  ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
-  ("explicate control" ,explicate-control ,interp-Cvar)
-  ("instruction selection" ,select-instructions ,interp-x86-0)
-  ("assign homes" ,assign-homes ,interp-x86-0)
-  ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
-  ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
-))
+(define compiler-passes
+  `( ("uniquify" ,uniquify ,interp-Lvar)
+     ;; Uncomment the following passes as you finish them.
+     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
+     ("explicate control" ,explicate-control ,interp-Cvar)
+     ("instruction selection" ,select-instructions ,interp-x86-0)
+     ("assign homes" ,assign-homes ,interp-x86-0)
+     ("patch instructions" ,patch-instructions ,interp-x86-0)
+     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+     ))
 
