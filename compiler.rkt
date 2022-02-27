@@ -168,7 +168,7 @@
   [(Var v) (Var v)]
 ))
 
-(define (select-instructions-assign var exp) (display exp) (match exp
+(define (select-instructions-assign var exp) (match exp
   [(Prim 'read '()) (list (Callq 'read_int) (Instr 'movq (list (Reg 'rax) var)))]
   [(Prim '- (list e)) (list (Instr 'movq (list (Imm '0) var)) (Instr 'subq (list (select-instructions-atom e) var)))]
   [(Prim op (list e1 e2)) (list (Instr 'movq (list (select-instructions-atom e1) var)) (Instr (if (equal? op '+) 'addq 'subq) (list (select-instructions-atom e2) var)))]
@@ -221,7 +221,7 @@
 ))
 
 (define (conclusion-instructions)
-  (list (Instr 'addq (list (Imm 16) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Instr 'retq '())))
+  (list (Instr 'addq (list (Imm 16) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Retq)))
 
 (define (main-instructions)
   (list (Instr 'pushq (list (Reg 'rbp))) (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))) (Instr 'subq (list (Imm 16) (Reg 'rsp))) (Jmp 'start)))
@@ -230,20 +230,20 @@
   (list (Instr 'globl (list 'main))))
 
 (define (prelude-and-conclusion p) (match p
-  [(X86Program info body) (X86Program info (append body (list (cons (string->symbol "") (Block '() (global-function)))) (list (cons 'main (Block '() (main-instructions)))) (list (cons 'conclusion (Block '() (conclusion-instructions))))))]))
+  [(X86Program info body) (X86Program info (append body (list (cons 'main (Block '() (main-instructions)))) (list (cons 'conclusion (Block '() (conclusion-instructions))))))]))
                                      
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
-(define compiler-passes
-  `( ("uniquify" ,uniquify ,interp-Lvar)
-     ;; Uncomment the following passes as you finish them.
-     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
-     ("explicate control" ,explicate-control ,interp-Cvar)
-     ("instruction selection" ,select-instructions ,interp-x86-0)
-     ("assign homes" ,assign-homes ,interp-x86-0)
-     ("patch instructions" ,patch-instructions ,interp-x86-0)
-     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
-     ))
+(define compiler-passes `(
+  ; ("partial evaluator", pe-Lint, interp-Lvar)
+  ("uniquify" ,uniquify ,interp-Lvar)
+  ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
+  ("explicate control" ,explicate-control ,interp-Cvar)
+  ("instruction selection" ,select-instructions ,interp-x86-0)
+  ("assign homes" ,assign-homes ,interp-x86-0)
+  ("patch instructions" ,patch-instructions ,interp-x86-0)
+  ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+))
 
