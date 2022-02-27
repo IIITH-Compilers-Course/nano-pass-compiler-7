@@ -38,12 +38,14 @@
     [((Int n1) (Int n2)) (Int (fx+ n1 n2))]
     [(_ _) (Prim '+ (list r1 r2))]))
 
-(define (pe-exp e)
-  (match e
-    [(Int n) (Int n)]
-    [(Prim 'read '()) (Prim 'read '())]
-    [(Prim '- (list e1)) (pe-neg (pe-exp e1))]
-    [(Prim '+ (list e1 e2)) (pe-add (pe-exp e1) (pe-exp e2))]))
+(define (pe-exp e) (match e
+  [(Var v) (Var v)]
+  [(Int n) (Int n)]
+  [(Prim 'read '()) (Prim 'read '())]
+  [(Prim '- (list e1)) (pe-neg (pe-exp e1))]
+  [(Prim '+ (list e1 e2)) (pe-add (pe-exp e1) (pe-exp e2))]
+  [(Let var e1 e2) (Let var (pe-exp e1) (pe-exp e2))]
+))
 
 (define (pe-Lint p)
   (match p
@@ -74,32 +76,69 @@
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
 ;; remove-complex-opera* : R1 -> R1
-(define (rco_atom exp) (match exp
-  [(Int i) #t]
-  [(Var v) #t]
-  [else #f]
-))
+; (define (rco_atom exp) (match exp
+;   [(Int i) #t]
+;   [(Var v) #t]
+;   [else #f]
+; ))
 
-(define (rco_exp exp) 
-  (display exp)
-  (display "\n")
-  (match exp
-    [(Int i) (Int i)]
-    [(Var v) (Var v)]
-    [(Prim 'read '()) (Prim 'read '())]
-    [(Prim '- (list e)) (let ([at (rco_atom e)]) (if at (Prim '- (list e)) (let ([tvar (gensym)]) (Let tvar (rco_exp e) (Prim '- (list (Var tvar)))))))]
-    [(Prim op (list e1 e2)) (let ([a1 (rco_atom e1)]) (let ([a2 (rco_atom e2)]) (cond
-      [(and a1 a2) (Prim op (list e1 e2))]
-      [(and (not a1) a2) (let ([t1 (gensym)]) (Let t1 (rco_exp e1) (Prim op (list (Var t1) e2))))]
-      [(and a1 (not a2)) (let ([t2 (gensym)]) (Let t2 (rco_exp e2) (Prim op (list e1 (Var t2)))))]
-      [(and (not a1) (not a2)) (let ([t1 (gensym)]) (let ([t2 (gensym)]) (Let t1 (rco_exp e1) (Let t2 (rco_exp e2) (Prim op (list (Var t1) (Var t2)))))))]
-    )))]
-    [(Let var e1 e2) (Let var (rco_exp e1) (rco_exp e2))]
-))
+; (define (rco_exp exp) 
+;   (display exp)
+;   (display "\n")
+;   (match exp
+;     [(Int i) (Int i)]
+;     [(Var v) (Var v)]
+;     [(Prim 'read '()) (Prim 'read '())]
+;     [(Prim '- (list e)) (let ([at (rco_atom e)]) (if at (Prim '- (list e)) (let ([tvar (gensym)]) (Let tvar (rco_exp e) (Prim '- (list (Var tvar)))))))]
+;     [(Prim op (list e1 e2)) (let ([a1 (rco_atom e1)]) (let ([a2 (rco_atom e2)]) (cond
+;       [(and a1 a2) (Prim op (list e1 e2))]
+;       [(and (not a1) a2) (let ([t1 (gensym)]) (Let t1 (rco_exp e1) (Prim op (list (Var t1) e2))))]
+;       [(and a1 (not a2)) (let ([t2 (gensym)]) (Let t2 (rco_exp e2) (Prim op (list e1 (Var t2)))))]
+;       [(and (not a1) (not a2)) (let ([t1 (gensym)]) (let ([t2 (gensym)]) (Let t1 (rco_exp e1) (Let t2 (rco_exp e2) (Prim op (list (Var t1) (Var t2)))))))]
+;     )))]
+;     [(Let var e1 e2) (Let var (rco_exp e1) (rco_exp e2))]
+; ))
+
+;; rco-atom : exp -> exp * (var * exp) list
+(define (rco-atom e)
+  (match e
+    [(Var x) (values (Var x) '())]
+    [(Int n) (values (Int n) '())]
+    [(Let x rhs body)
+     (define new-rhs (rco-exp rhs))
+     (define-values (new-body body-ss) (rco-atom body))
+     (values new-body (append `((,x . ,new-rhs)) body-ss))]
+    [(Prim op es)
+     (define-values (new-es sss)
+       (for/lists (l1 l2) ([e es]) (rco-atom e)))
+     (define ss (append* sss))
+     (define tmp (gensym 'tmp))
+     (values (Var tmp)
+             (append ss `((,tmp . ,(Prim op new-es)))))]
+    ))
+
+(define (make-lets^ bs e)
+  (match bs
+    [`() e]
+    [`((,x . ,e^) . ,bs^)
+     (Let x e^ (make-lets^ bs^ e))]))
+
+;; rco-exp : exp -> exp
+(define (rco-exp e)
+  (match e
+    [(Var x) (Var x)]
+    [(Int n) (Int n)]
+    [(Let x rhs body)
+     (Let x (rco-exp rhs) (rco-exp body))]
+    [(Prim op es)
+     (define-values (new-es sss)
+       (for/lists (l1 l2) ([e es]) (rco-atom e)))
+     (make-lets^ (append* sss) (Prim op new-es))]
+    ))
 
 (define (remove-complex-opera* p)
   (match p
-    [(Program info e) (Program info (rco_exp e))])
+    [(Program info e) (Program info (rco-exp e))])
 )
 
 ;; explicate-control : R1 -> C0
@@ -137,12 +176,12 @@
 ))
 
 (define (select-instructions-statement stmt) (match stmt
-  [(Return exp) (append (select-instructions-assign (Reg 'rax) exp) (list (Jmp 'conclusion)))]
+  [(Return exp) (append (select-instructions-assign (Reg 'rax) exp) (list (Jmp 'end)))]
   [(Seq (Assign var exp) cont) (append (select-instructions-assign var exp) (select-instructions-statement cont))]
 ))
 
 (define (select-instructions p) (match p
-  [(CProgram info body) (X86Program info (for/list ([func body]) (cons (car func) (Block '() (select-instructions-statement (cdr func))))))]
+  [(CProgram info body) (X86Program info (append (for/list ([func body]) (cons (car func) (Block '() (select-instructions-statement (cdr func))))) (list (cons 'end (Block '() '())))))]
 ))
 
 ;; assign-homes : pseudo-x86 -> pseudo-x86
@@ -164,47 +203,26 @@
 (define (assign-homes p) (match p
   [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (assign-homes-int (cdr func)))))]
 ))
+
 ;; patch-instructions : psuedo-x86 -> x86
-(define (patch-instructions-temp x86_body)
-  (match x86_body
-    [(Block info body) (Block info (patch-instructions-new body))]
-    ))
+(define (patch-instructions p)
+  (error "TODO: code goes here (patch-instructions)"))
 
-(define (patch-instructions-new cmd-list)
-  (cond [(empty? cmd-list) '()]
-        [else (match (car cmd-list)
-        [(Instr 'movq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'movq (list (Reg 'rax) (Deref 'rbp int_2) ))) (patch-instructions-new (cdr cmd-list)))]
-        [_ (append (list (car cmd-list)) (patch-instructions-new (cdr cmd-list)))])]))
-
-(define (patch-instructions p) (match p
-  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (patch-instructions-temp (cdr func)))))]
-))
-
-;Program info (list (cons label (Block '() '(list of instructions))))
-
-(define (conclusion-instructions)
-  (list (Instr 'addq (list (Imm 16) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Instr 'retq '())))
-
-(define (main-instructions)
-  (list (Instr 'pushq (list (Reg 'rbp))) (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))) (Instr 'subq (list (Imm 16) (Reg 'rsp))) (Jmp 'start)))
-
-(define (global-function)
-  (list (Instr 'globl (list 'main))))
-
-(define (prelude-and-conclusion p) (match p
-  [(X86Program info body) (X86Program info (append body (list (cons (string->symbol "") (Block '() (global-function)))) (list (cons 'main (Block '() (main-instructions)))) (list (cons 'conclusion (Block '() (conclusion-instructions))))))]))
-                                     
+;; prelude-and-conclusion : x86 -> x86
+(define (prelude-and-conclusion p)
+  (error "TODO: code goes here (prelude-and-conclusion)"))
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
 ;; must be named "compiler.rkt"
-(define compiler-passes
-  `( ("uniquify" ,uniquify ,interp-Lvar)
-     ;; Uncomment the following passes as you finish them.
-     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
-     ("explicate control" ,explicate-control ,interp-Cvar)
-     ("instruction selection" ,select-instructions ,interp-x86-0)
-     ("assign homes" ,assign-homes ,interp-x86-0)
-     ("patch instructions" ,patch-instructions ,interp-x86-0)
-     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
-     ))
+(define compiler-passes `(
+  ("partial evaluator", pe-Lint, interp-Lvar)
+  ("uniquify" ,uniquify ,interp-Lvar)
+  ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
+  ("explicate control" ,explicate-control ,interp-Cvar)
+  ("instruction selection" ,select-instructions ,interp-x86-0)
+  ("assign homes" ,assign-homes ,interp-x86-0)
+  ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
+  ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+))
+
