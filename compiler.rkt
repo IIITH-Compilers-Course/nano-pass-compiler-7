@@ -76,28 +76,6 @@
     [(Program info e) (Program info ((uniquify-exp '()) e))]))
 
 ;; remove-complex-opera* : R1 -> R1
-; (define (rco_atom exp) (match exp
-;   [(Int i) #t]
-;   [(Var v) #t]
-;   [else #f]
-; ))
-
-; (define (rco_exp exp) 
-;   (display exp)
-;   (display "\n")
-;   (match exp
-;     [(Int i) (Int i)]
-;     [(Var v) (Var v)]
-;     [(Prim 'read '()) (Prim 'read '())]
-;     [(Prim '- (list e)) (let ([at (rco_atom e)]) (if at (Prim '- (list e)) (let ([tvar (gensym)]) (Let tvar (rco_exp e) (Prim '- (list (Var tvar)))))))]
-;     [(Prim op (list e1 e2)) (let ([a1 (rco_atom e1)]) (let ([a2 (rco_atom e2)]) (cond
-;       [(and a1 a2) (Prim op (list e1 e2))]
-;       [(and (not a1) a2) (let ([t1 (gensym)]) (Let t1 (rco_exp e1) (Prim op (list (Var t1) e2))))]
-;       [(and a1 (not a2)) (let ([t2 (gensym)]) (Let t2 (rco_exp e2) (Prim op (list e1 (Var t2)))))]
-;       [(and (not a1) (not a2)) (let ([t1 (gensym)]) (let ([t2 (gensym)]) (Let t1 (rco_exp e1) (Let t2 (rco_exp e2) (Prim op (list (Var t1) (Var t2)))))))]
-;     )))]
-;     [(Let var e1 e2) (Let var (rco_exp e1) (rco_exp e2))]
-; ))
 
 ;; rco-atom : exp -> exp * (var * exp) list
 (define (rco-atom e)
@@ -105,16 +83,16 @@
     [(Var x) (values (Var x) '())]
     [(Int n) (values (Int n) '())]
     [(Let x rhs body)
-     (define new-rhs (rco-exp rhs))
-     (define-values (new-body body-ss) (rco-atom body))
-     (values new-body (append `((,x . ,new-rhs)) body-ss))]
+     (define make-rhs (rco-exp rhs))
+     (define-values (new-body body-exp) (rco-atom body))
+     (values new-body (append `((,x . ,make-rhs)) body-exp))]
     [(Prim op es)
-     (define-values (new-es sss)
+     (define-values (new-es es-exp)
        (for/lists (l1 l2) ([e es]) (rco-atom e)))
-     (define ss (append* sss))
+     (define ess (append* es-exp))
      (define tmp (gensym 'tmp))
      (values (Var tmp)
-             (append ss `((,tmp . ,(Prim op new-es)))))]
+             (append ess `((,tmp . ,(Prim op new-es)))))]
     ))
 
 (define (make-lets^ bs e)
@@ -131,9 +109,9 @@
     [(Let x rhs body)
      (Let x (rco-exp rhs) (rco-exp body))]
     [(Prim op es)
-     (define-values (new-es sss)
+     (define-values (new-es es-exp)
        (for/lists (l1 l2) ([e es]) (rco-atom e)))
-     (make-lets^ (append* sss) (Prim op new-es))]
+     (make-lets^ (append* es-exp) (Prim op new-es))]
     ))
 
 (define (remove-complex-opera* p)
