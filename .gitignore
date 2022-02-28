@@ -6,7 +6,7 @@
 \#*.rkt#*#
 
 # generated files
-*.o
+# *.o
 *.s
 *.out
 *.out.dSYM
