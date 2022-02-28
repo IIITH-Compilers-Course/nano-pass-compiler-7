@@ -1,5 +1,7 @@
 ## A1: Compiler for *L<sub>var</sub>* Language
 
+## R1 Bonus: Exercise 10 also done (3 member team)
+
 ## Homework questions
 1. Solve **Exercises 2 to 9** of the text book.
 2. Teams with **4 students** must additionally solve **Exercise 10 and 11** too.
