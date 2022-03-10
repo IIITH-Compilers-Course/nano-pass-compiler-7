@@ -57,8 +57,7 @@
 
 (define (uniquify-exp env)
   (lambda (e)
-    ; (display env)
-    ; (display " ")
+    ; (display env)e-after-extr
     ; (display e)
     ; (display "\n")
     (match e
@@ -170,7 +169,7 @@
 
 (define (select-instructions-assign var exp) (match exp
   [(Prim 'read '()) (list (Callq 'read_int) (Instr 'movq (list (Reg 'rax) var)))]
-  [(Prim '- (list e)) (list (Instr 'movq (list (Imm '0) var)) (Instr 'subq (list (select-instructions-atom e) var)))]
+  [(Prim '- (list e)) (list (Instr 'movq (list (select-instructions-atom e) var)) (Instr 'negq (list var)))]
   [(Prim op (list e1 e2)) (list (Instr 'movq (list (select-instructions-atom e1) var)) (Instr (if (equal? op '+) 'addq 'subq) (list (select-instructions-atom e2) var)))]
   [_ (list (Instr 'movq (list (select-instructions-atom exp) var)))]
 ))
@@ -185,14 +184,31 @@
 ))
 
 ;; uncover-live : pseudo-x86 -> pseudo-x86
+(define (clean-for-live-after vars) (list->set (for/list ([el vars] #:when (not (Imm? el))) el)))
+
+(define (live-after-extract-writes exp) (match exp
+  [(Instr 'movq es) (clean-for-live-after (cdr es))]
+  [(Instr 'addq es) (clean-for-live-after (cdr es))]
+  [(Instr 'subq es) (clean-for-live-after (cdr es))]
+  [_ (set)]
+))
+(define (live-after-extract-reads exp) (match exp
+  [(Instr 'movq es) (clean-for-live-after (list (car es)))]
+  [(Instr 'addq es) (clean-for-live-after es)]
+  [(Instr 'subq es) (clean-for-live-after es)]
+  [(Instr 'negq es) (clean-for-live-after (list (car es)))]
+  [(Jmp target) (set (Reg 'rax) (Reg 'rsp))]
+  [_ (set)]
+))
+
 (define (calculate-live-after instr)
-  (display instr)
-  (if (null? (cdr instr)) (list (set)) (
-    (let ([live-afters (calculate-live-after (cdr instr))]) (set-union (set-subtract (car live-afters) (live-after-extract-writes (car instr))) (live-after-extract-reads (car instr)))
-))))
+  ; (display instr)
+  (if (null? instr) (list (set))
+    (let ([live-afters (calculate-live-after (cdr instr))]) (append (list (set-union (set-subtract (car live-afters) (live-after-extract-writes (car instr))) (live-after-extract-reads (car instr)))) live-afters))
+))
 
 (define (uncover-live p) (match p
-  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (Block (list (cons 'live-after (calculate-live-after (cdr func)))) (cdr func)))))]
+  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (list (cons 'live-after (calculate-live-after bbody))) bbody)]))))]
 ))
 
 ;; patch-instructions : psuedo-x86 -> x86
@@ -229,7 +245,7 @@
 ;; must be named "compiler.rkt"
 (define compiler-passes `(
   ; ("partial evaluator", pe-Lint, interp-Lvar)
-  ("uniquify" ,uniquify ,interp-Lvar)
+  ; ("uniquify" ,uniquify ,interp-Lvar)
   ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
   ("explicate control" ,explicate-control ,interp-Cvar)
   ("instruction selection" ,select-instructions ,interp-x86-0)
