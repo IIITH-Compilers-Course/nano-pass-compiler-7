@@ -184,53 +184,44 @@
   [(CProgram info body) (X86Program info (for/list ([func body]) (cons (car func) (Block '() (select-instructions-statement (cdr func))))))]
 ))
 
-;; assign-homes : pseudo-x86 -> pseudo-x86
-(define var-offset-table (make-hash '()))
+;; uncover-live : pseudo-x86 -> pseudo-x86
+(define (calculate-live-after instr)
+  (display instr)
+  (if (null? (cdr instr)) (list (set)) (
+    (let ([live-afters (calculate-live-after (cdr instr))]) (set-union (set-subtract (car live-afters) (live-after-extract-writes (car instr))) (live-after-extract-reads (car instr)))
+))))
 
-(define (assign-homes-int stmt) (match stmt
-  [(Var v) (let ([hash-status (hash-ref var-offset-table v #f)]) (if hash-status 
-    (Deref 'rbp hash-status)
-    (begin
-      (hash-set! var-offset-table v (- (* (hash-count var-offset-table) '-8) '8))
-      (Deref 'rbp (hash-ref var-offset-table v))
-    )
-  ))]
-  [(Instr op args) (Instr op (for/list ([arg args]) (assign-homes-int arg)))]
-  [(Block info body) (Block info (for/list ([stmt-int body]) (assign-homes-int stmt-int)))]
-  [exp exp]
-))
-
-(define (assign-homes p) (match p
-  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (assign-homes-int (cdr func)))))]
+(define (uncover-live p) (match p
+  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (Block (list (cons 'live-after (calculate-live-after (cdr func)))) (cdr func)))))]
 ))
 
 ;; patch-instructions : psuedo-x86 -> x86
-(define (patch-instructions-temp x86_body)
-  (match x86_body
-    [(Block info body) (Block info (patch-instructions-new body))]
-    ))
+; (define (patch-instructions-temp x86_body)
+;   (match x86_body
+;     [(Block info body) (Block info (patch-instructions-new body))]
+;     ))
 
-(define (patch-instructions-new cmd-list)
-  (cond [(empty? cmd-list) '()]
-        [else (match (car cmd-list)
-        [(Instr 'movq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'movq (list (Reg 'rax) (Deref 'rbp int_2) ))) (patch-instructions-new (cdr cmd-list)))]
-        [_ (append (list (car cmd-list)) (patch-instructions-new (cdr cmd-list)))])]))
+; (define (patch-instructions-new cmd-list)
+;   (cond [(empty? cmd-list) '()]
+;         [else (match (car cmd-list)
+;         [(Instr 'movq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'movq (list (Reg 'rax) (Deref 'rbp int_2) ))) (patch-instructions-new (cdr cmd-list)))]
+;         [_ (append (list (car cmd-list)) (patch-instructions-new (cdr cmd-list)))])]))
 
-(define (patch-instructions p) (match p
-  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (patch-instructions-temp (cdr func)))))]
-))
+; (define (patch-instructions p) (match p
+;   [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (patch-instructions-temp (cdr func)))))]
+; ))
 
-(define (conclusion-instructions)
-  (list (Instr 'addq (list (Imm 16) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Retq)))
+; (define (conclusion-instructions)
+;   (list (Instr 'addq (list (Imm 16) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Retq)))
 
-(define (main-instructions)
-  (list (Instr 'pushq (list (Reg 'rbp))) (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))) (Instr 'subq (list (Imm 16) (Reg 'rsp))) (Jmp 'start)))
+; (define (main-instructions)
+;   (list (Instr 'pushq (list (Reg 'rbp))) (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))) (Instr 'subq (list (Imm 16) (Reg 'rsp))) (Jmp 'start)))
 
-(define (global-function)
-  (list (Instr 'globl (list 'main))))
+; (define (global-function)
+;   (list (Instr 'globl (list 'main))))
 
-(define (prelude-and-conclusion p) (match p
-  [(X86Program info body) (X86Program info (append body (list (cons 'main (Block '() (main-instructions)))) (list (cons 'conclusion (Block '() (conclusion-instructions))))))]))
+; (define (prelude-and-conclusion p) (match p
+;   [(X86Program info body) (X86Program info (append body (list (cons 'main (Block '() (main-instructions)))) (list (cons 'conclusion (Block '() (conclusion-instructions))))))]))
                                      
 
 ;; Define the compiler passes to be used by interp-tests and the grader
@@ -242,8 +233,8 @@
   ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
   ("explicate control" ,explicate-control ,interp-Cvar)
   ("instruction selection" ,select-instructions ,interp-x86-0)
-  ("assign homes" ,assign-homes ,interp-x86-0)
-  ("patch instructions" ,patch-instructions ,interp-x86-0)
-  ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+  ("uncover live", uncover-live, interp-x86-0)
+  ; ("patch instructions" ,patch-instructions ,interp-x86-0)
+  ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
 ))
 
