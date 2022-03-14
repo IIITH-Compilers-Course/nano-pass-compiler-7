@@ -230,7 +230,8 @@
         [else (add-edge! graph_element (caar list_input) (car (cdar list_input))) (add_edges graph_element list_input)]))
 
 (define (traverse_list set_input graph_element)
-  (traverse_list (cdr set_input) (add_edges graph_element (set->list (car set_input)))))
+  (cond [(empty? set_input) graph_element]
+        [else (traverse_list (cdr (set_input)) (add_edges graph_element (set->list (car set_input))))]))
 
 ;(define (build-interference p) (match p
   ;[(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (append info (cons)) bbody)]))))]
