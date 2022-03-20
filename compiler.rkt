@@ -192,6 +192,7 @@
   [(Instr 'movq es) (clean-for-live-after (cdr es))]
   [(Instr 'addq es) (clean-for-live-after (cdr es))]
   [(Instr 'subq es) (clean-for-live-after (cdr es))]
+  [(Instr 'negq es) (clean-for-live-after (list (car es)))]
   [_ (set)]
 ))
 (define (live-after-extract-reads exp) (match exp
@@ -216,30 +217,25 @@
 
 ;;First git push
 ;;Build interferece graph code
-(define (pair-creation first_elem rest_lst output_list)
-  (cond [(empty? rest_lst) output_list]
-        [else (pair-creation first_elem (cdr rest_lst) (cons (list first_elem (car rest_lst)) output_list))]))
+; (define (add_edges graph_element list_input)
+;   (cond [(or (empty? list_input) (empty? (cdr list_input))) graph_element]
+;         [(has-edge? graph_element (car list_input) (cadr list_input)) (add_edges graph_element (cdr list_input))]
+;         [(has-edge? graph_element (cadr list_input) (car list_input)) (add_edges graph_element (cdr list_input))]
+;         [else (add-edge! graph_element (car list_input) (cadr list_input)) (add_edges graph_element list_input)]))
 
-(define (create-unique-pair list_input output_list)
-  (cond [(empty? list_input) output_list]
-        [else (create-unique-pair (cdr list_input) (pair-creation (car list_input) (cdr list_input) output_list))]))
+(define (add_edges graph instr inp_set)
+  (define d_set (if (and (Instr? instr) (equal? (Instr-name instr) 'movq)) (set (last (Instr-arg* instr))) (live-after-extract-writes instr)))
+  (define v_set (if (and (Instr? instr) (equal? (Instr-name instr) 'movq)) (set-subtract inp_set (clean-for-live-after (Instr-arg* instr))) (set-subtract inp_set d_set)))
+  (display d_set) (display "  ") (display v_set) (display "\n")
+  (for ([d d_set]) (for ([v v_set]) (add-edge! graph d v)))
+)
 
-(define (add_edges graph_element list_input)
-  (cond [(or (empty? list_input) (empty? (cdr list_input))) graph_element]
-        [(has-edge? graph_element (car list_input) (cadr list_input)) (add_edges graph_element (cdr list_input))]
-        [(has-edge? graph_element (cadr list_input) (car list_input)) (add_edges graph_element (cdr list_input))]
-        [else (add-edge! graph_element (car list_input) (cadr list_input)) (add_edges graph_element list_input)]))
-
-(define (traverse_list set_input graph_element)
+(define (traverse_list set_input instr graph_element)
   (cond [(empty? set_input) graph_element]
-        [else (traverse_list (cdr set_input) (add_edges graph_element (set->list (car set_input))))]))
-
-;(define (build-interference p) (match p
-  ;[(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (append info (cons)) bbody)]))))]
-;))
+        [else (traverse_list (cdr set_input) (cdr instr) (let ([_ (add_edges graph_element (car instr) (car set_input))]) graph_element))]))
 
 (define (build-interference p) (match p
-  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (append (list (cons 'conflicts (print-graph (traverse_list (cdr (assoc 'live-after info)) (undirected-graph '()))))) info) bbody)]))))]
+  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (append (list (cons 'conflicts (print-graph (traverse_list (cddr (assoc 'live-after info)) bbody (undirected-graph '()))))) info) bbody)]))))]
 ))
 
 ;; patch-instructions : psuedo-x86 -> x86
