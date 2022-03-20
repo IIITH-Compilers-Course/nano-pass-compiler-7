@@ -7,6 +7,7 @@
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
 (require "utilities.rkt")
+(require "graph-printing.rkt")
 (provide (all-defined-out))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -224,22 +225,23 @@
         [else (create-unique-pair (cdr list_input) (pair-creation (car list_input) (cdr list_input) output_list))]))
 
 (define (add_edges graph_element list_input)
-  (cond [(empty? list_input) graph_element]
-        [(has-edge? graph_element (caar list_input) (car (cdar list_input))) (add_edges graph_element (cdr list_input))]
-        [(has-edge? graph_element (car (cdar list_input)) (caar list_input)) (add_edges graph_element (cdr list_input))]
-        [else (add-edge! graph_element (caar list_input) (car (cdar list_input))) (add_edges graph_element list_input)]))
+  (cond [(or (empty? list_input) (empty? (cdr list_input))) graph_element]
+        [(has-edge? graph_element (car list_input) (cadr list_input)) (add_edges graph_element (cdr list_input))]
+        [(has-edge? graph_element (cadr list_input) (car list_input)) (add_edges graph_element (cdr list_input))]
+        [else (add-edge! graph_element (car list_input) (cadr list_input)) (add_edges graph_element list_input)]))
 
 (define (traverse_list set_input graph_element)
   (cond [(empty? set_input) graph_element]
-        [else (traverse_list (cdr (set_input)) (add_edges graph_element (set->list (car set_input))))]))
+        [else (traverse_list (cdr set_input) (add_edges graph_element (set->list (car set_input))))]))
 
 ;(define (build-interference p) (match p
   ;[(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (append info (cons)) bbody)]))))]
 ;))
 
 (define (build-interference p) (match p
-  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (append info (cons 'conflicts (traverse_list (assoc 'live-after info) (undirected-graph '())))) bbody)]))))]
+  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (append (list (cons 'conflicts (print-graph (traverse_list (cdr (assoc 'live-after info)) (undirected-graph '()))))) info) bbody)]))))]
 ))
+
 ;; patch-instructions : psuedo-x86 -> x86
 ; (define (patch-instructions-temp x86_body)
 ;   (match x86_body
@@ -279,6 +281,7 @@
   ("explicate control" ,explicate-control ,interp-Cvar)
   ("instruction selection" ,select-instructions ,interp-x86-0)
   ("uncover live", uncover-live, interp-x86-0)
+  ("build interference", build-interference, interp-x86-0)
   ; ("patch instructions" ,patch-instructions ,interp-x86-0)
   ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
 ))
