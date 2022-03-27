@@ -3,6 +3,7 @@
 
 (require "utilities.rkt")
 (require "interp-Lvar.rkt")
+(require "interp-Cif.rkt")
 (require "interp-Lif.rkt")
 (require "interp-Cvar.rkt")
 (require "interp.rkt")

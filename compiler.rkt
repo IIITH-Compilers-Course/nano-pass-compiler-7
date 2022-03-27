@@ -4,6 +4,7 @@
 (require graph)
 (require "interp.rkt")
 (require "interp-Lint.rkt")
+(require "interp-Cif.rkt")
 (require "interp-Lif.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
@@ -161,16 +162,18 @@
   )
 )
 
-(define (explicate_pred cnd thn els)
+(define (explicate-pred cnd thn els)
   (match cnd
-    [(Var x) ___]
-    [(Let x rhs body) ___]
-    [(Prim 'not (list e)) ___]
+    [(Var x) (IfStmt (Prim 'eq? (list cnd (Bool #t))) (create-block thn) (create-block els))]
+    [(Let x rhs body) (explicate-assign rhs x (explicate-pred body thn els))]
+    [(Prim 'not (list e)) (explicate-pred e els thn)]
     [(Prim op es) #:when (or (eq? op 'eq?) (eq? op '<))
-    (IfStmt (Prim op es) (create_block thn)
-    (create_block els))]
+    (IfStmt (Prim op es) (create-block thn) (create-block els))]
     [(Bool b) (if b thn els)]
-    [(If cnd^ thn^ els^) ___]
+    [(If cnd^ thn^ els^) 
+    (define thn-goto (create-block thn))
+    (define els-goto (create-block els))
+    (explicate-pred cnd^ (explicate-pred thn^ thn-goto els-goto) (explicate-pred els^ thn-goto els-goto))]
     [else (error "explicate_pred unhandled case" cnd)]
   )
 )
@@ -197,23 +200,31 @@
 ))
 
 (define (explicate-control p) (match p
-  [(Program info body) (CProgram info (list (cons 'start (explicate-tail body))))]
+  [(Program info body) (CProgram info (append (list (cons 'start (explicate-tail body))) basic-blocks))]
 ))
 
 ;; select-instructions : C0 -> pseudo-x86
 (define (select-instructions-atom atm) (match atm
   [(Int i) (Imm i)]
   [(Var v) (Var v)]
+  [(Bool b) (if b (Imm 1) (Imm 0))]
 ))
 
+(define cmp-ops (list 'eq? '< '<= '> '>=))
+(define cmp-cond (list (cons 'eq? 'e) (cons '< 'l) (cons '<= 'le) (cons '> 'g) (cons '>= 'ge)))
+
 (define (select-instructions-assign var exp) (match exp
-  [(Prim 'read '()) (list (Callq 'read_int) (Instr 'movq (list (Reg 'rax) var)))]
+  [(Prim 'not (list e)) (append (if (eq? (Var-name var) (Var-name e)) '() (list (Instr 'movq (list (select-instructions-atom e) var)))) (list (Instr 'xorq (list (Imm 1) var))))]
+  [(Prim op (list e1 e2)) #:when (member op cmp-ops) (list (Instr 'cmpq (list (select-instructions-atom e1) (select-instructions-atom e2))) (Instr 'set (list (cdr (assoc op cmp-cond)) (ByteReg 'al))) (Instr 'movzbq (list (ByteReg 'al) var)))]
+  [(Prim 'read '()) (list (Callq 'read_int 1) (Instr 'movq (list (Reg 'rax) var)))]
   [(Prim '- (list e)) (list (Instr 'movq (list (select-instructions-atom e) var)) (Instr 'negq (list var)))]
   [(Prim op (list e1 e2)) (list (Instr 'movq (list (select-instructions-atom e1) var)) (Instr (if (equal? op '+) 'addq 'subq) (list (select-instructions-atom e2) var)))]
   [_ (list (Instr 'movq (list (select-instructions-atom exp) var)))]
 ))
 
 (define (select-instructions-statement stmt) (match stmt
+  [(Goto lbl) (list (Jmp lbl))]
+  [(IfStmt (Prim op (list e1 e2)) (Goto thn) (Goto els)) #:when (member op cmp-ops) (list (Instr 'cmpq (list (select-instructions-atom e1) (select-instructions-atom e2))) (JmpIf (cdr (assoc op cmp-cond)) thn) (Jmp els))]
   [(Return exp) (append (select-instructions-assign (Reg 'rax) exp) (list (Jmp 'conclusion)))]
   [(Seq (Assign var exp) cont) (append (select-instructions-assign var exp) (select-instructions-statement cont))]
 ))
@@ -312,8 +323,8 @@
   ("shrink", shrink, interp-Lif)
   ("uniquify" ,uniquify ,interp-Lif)
   ("remove complex opera*" ,remove-complex-opera* ,interp-Lif)
-  ; ("explicate control" ,explicate-control ,interp-Cvar)
-  ; ("instruction selection" ,select-instructions ,interp-x86-0)
+  ("explicate control" ,explicate-control ,interp-Cif)
+  ("instruction selection" ,select-instructions ,interp-x86-1)
   ; ("uncover live", uncover-live, interp-x86-0)
   ; ("build interference", build-interference, interp-x86-0)
   ; ("patch instructions" ,patch-instructions ,interp-x86-0)
