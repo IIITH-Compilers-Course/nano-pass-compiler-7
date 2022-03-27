@@ -4,6 +4,7 @@
 (require graph)
 (require "interp.rkt")
 (require "interp-Lint.rkt")
+(require "interp-Lif.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
 (require "utilities.rkt")
@@ -53,100 +54,134 @@
   (match p
     [(Program info e) (Program info (pe-exp e))]))
 
+;;;;;;
+;; Boolean Lif Pass shrink
+;;;;;;
+
+(define (shrink-exp exp)
+  (match exp
+    [(Prim 'and (list e1 e2)) (If e1 e2 (Bool #f))]
+    [(Prim 'or (list e1 e2)) (If e1 (Bool #t) e2)]
+    [(Let x e body) (Let x (shrink-exp e) (shrink-exp body))]
+    [(Prim op es) (Prim op (for/list ([e es]) (shrink-exp e)))]
+    [(If e1 e2 e3) (If (shrink-exp e1) (shrink-exp e2) (shrink-exp e3))]
+    [_ exp]))
+
+(define (shrink p)
+  (match p
+    [(Program info e) (Program info (shrink-exp e))]))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; HW1 Passes
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (uniquify-exp env)
   (lambda (e)
-    ; (display env)e-after-extr
-    ; (display e)
-    ; (display "\n")
     (match e
       [(Var x) (Var (cadr (assoc x env)))]
       [(Int n) (Int n)]
+      [(Bool b) (Bool b)]
       [(Let x e body) (
         let ([var_sampled (gensym x)])
         (Let var_sampled ((uniquify-exp (append (list (list x var_sampled)) env)) e) ((uniquify-exp (append (list (list x var_sampled)) env)) body))
       )]
-      [(Prim op es) (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
+      [(Prim op es) (Prim op (for/list ([e es]) ((uniquify-exp env) e)))]
+      [(If e1 e2 e3) (If ((uniquify-exp env) e1) ((uniquify-exp env) e2) ((uniquify-exp env) e3))]
+    )
+  )
+)
 
 ;; uniquify : R1 -> R1
 (define (uniquify p)
   (match p
-    [(Program info e) (Program info ((uniquify-exp '()) e))]))
+    [(Program info e) (Program info ((uniquify-exp '()) e))]
+  )
+)
 
-;; remove-complex-opera* : R1 -> R1
-; (define (rco_atom exp) (match exp
-;   [(Int i) #t]
-;   [(Var v) #t]
-;   [else #f]
-; ))
-
-; (define (rco_exp exp) 
-;   (display exp)
-;   (display "\n")
-;   (match exp
-;     [(Int i) (Int i)]
-;     [(Var v) (Var v)]
-;     [(Prim 'read '()) (Prim 'read '())]
-;     [(Prim '- (list e)) (let ([at (rco_atom e)]) (if at (Prim '- (list e)) (let ([tvar (gensym)]) (Let tvar (rco_exp e) (Prim '- (list (Var tvar)))))))]
-;     [(Prim op (list e1 e2)) (let ([a1 (rco_atom e1)]) (let ([a2 (rco_atom e2)]) (cond
-;       [(and a1 a2) (Prim op (list e1 e2))]
-;       [(and (not a1) a2) (let ([t1 (gensym)]) (Let t1 (rco_exp e1) (Prim op (list (Var t1) e2))))]
-;       [(and a1 (not a2)) (let ([t2 (gensym)]) (Let t2 (rco_exp e2) (Prim op (list e1 (Var t2)))))]
-;       [(and (not a1) (not a2)) (let ([t1 (gensym)]) (let ([t2 (gensym)]) (Let t1 (rco_exp e1) (Let t2 (rco_exp e2) (Prim op (list (Var t1) (Var t2)))))))]
-;     )))]
-;     [(Let var e1 e2) (Let var (rco_exp e1) (rco_exp e2))]
-; ))
-
-;; rco-atom : exp -> exp * (var * exp) list
-(define (rco-atom e)
+(define (rco-atom e) 
   (match e
-    [(Var x) (values (Var x) '())]
     [(Int n) (values (Int n) '())]
-    [(Let x rhs body)
-     (define new-rhs (rco-exp rhs))
-     (define-values (new-body body-ss) (rco-atom body))
-     (values new-body (append `((,x . ,new-rhs)) body-ss))]
+    [(Var x) (values (Var x) '())]
+    [(Bool b) (values (Bool b) '())]
+    [(Let key val body)
+      (define-values (body-atom body-env) (rco-atom body))
+      (values body-atom (cons (list key (rco-exp val)) body-env))
+    ]
     [(Prim op es)
-     (define-values (new-es sss)
-       (for/lists (l1 l2) ([e es]) (rco-atom e)))
-     (define ss (append* sss))
-     (define tmp (gensym 'tmp))
-     (values (Var tmp)
-             (append ss `((,tmp . ,(Prim op new-es)))))]
-    ))
+      (define-values (new-es sss)
+        (for/lists (l1 l2) ([e es]) (rco-atom e)))
+      (define key (gensym))
+      (values (Var key) (cons (list key (Prim op new-es)) (append* sss)))
+    ]
+  )
+)
 
-(define (make-lets^ bs e)
-  (match bs
-    [`() e]
-    [`((,x . ,e^) . ,bs^)
-     (Let x e^ (make-lets^ bs^ e))]))
+(define (normalise-env-exp env exp)
+  (match env
+    ['() exp]
+    [`(,(list key val) . ,rest-list)
+      (Let key val (normalise-env-exp rest-list exp))
+    ]
+  )
+)
 
-;; rco-exp : exp -> exp
 (define (rco-exp e)
   (match e
-    [(Var x) (Var x)]
     [(Int n) (Int n)]
-    [(Let x rhs body)
-     (Let x (rco-exp rhs) (rco-exp body))]
+    [(Var x) (Var x)]
+    [(Bool b) (Bool b)]
+    [(Let key val body) (Let key (rco-exp val) (rco-exp body))]
     [(Prim op es)
-     (define-values (new-es sss)
-       (for/lists (l1 l2) ([e es]) (rco-atom e)))
-     (make-lets^ (append* sss) (Prim op new-es))]
-    ))
+      (define-values (new-es sss)
+        (for/lists (l1 l2) ([e es]) (rco-atom e)))
+      (normalise-env-exp (append* sss) (Prim op new-es))
+    ]
+    [(If e1 e2 e3) (If (rco-exp e1) (rco-exp e2) (rco-exp e3))]
+  )
+)
 
+;; remove-complex-opera* : R1 -> R1
 (define (remove-complex-opera* p)
   (match p
-    [(Program info e) (Program info (rco-exp e))])
+    [(Program info e) (Program info (rco-exp e))]
+  )
+)
+
+(define basic-blocks '())
+
+(define (create-block tail)
+  (match tail
+    [(Goto label) (Goto label)]
+    [else
+      (let ([label (gensym 'block)])
+        (set! basic-blocks (cons (cons label tail) basic-blocks))
+        (Goto label)
+      )
+    ]
+  )
+)
+
+(define (explicate_pred cnd thn els)
+  (match cnd
+    [(Var x) ___]
+    [(Let x rhs body) ___]
+    [(Prim 'not (list e)) ___]
+    [(Prim op es) #:when (or (eq? op 'eq?) (eq? op '<))
+    (IfStmt (Prim op es) (create_block thn)
+    (create_block els))]
+    [(Bool b) (if b thn els)]
+    [(If cnd^ thn^ els^) ___]
+    [else (error "explicate_pred unhandled case" cnd)]
+  )
 )
 
 ;; explicate-control : R1 -> C0
 (define (explicate-tail e) (match e
   [(Var x) (Return (Var x))]
   [(Int n) (Return (Int n))]
+  [(Bool b) (Return (Bool b))]
   [(Let x rhs body) (explicate-assign rhs x (explicate-tail body))]
+  [(If e1 e2 e3) (explicate-pred e1 (explicate-tail e2) (explicate-tail e3))]
   [(Prim op es) (Return (Prim op es))]
   [else (error "explicate-tail unhandled case" e)]
 ))
@@ -154,7 +189,9 @@
 (define (explicate-assign e x cont) (match e
   [(Var x_int) (Seq (Assign (Var x) (Var x_int)) cont)]
   [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
+  [(Bool b) (Seq (Assign (Var x) (Bool b)) cont)]
   [(Let y rhs body) (explicate-assign rhs y (explicate-assign body x cont))]
+  [(If e1 e2 e3) (let ([gotostmt (create-block cont)]) (Seq (explicate-pred e1 (explicate-assign e2 x gotostmt) (explicate-assign e3 x gotostmt))))]
   [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
   [else (error "explicate-assign unhandled case" e)]
 ))
@@ -272,13 +309,13 @@
 ;; must be named "compiler.rkt"
 (define compiler-passes `(
   ; ("partial evaluator", pe-Lint, interp-Lvar)
-  ; ("uniquify" ,uniquify ,interp-Lvar)
-  ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar)
-  ("explicate control" ,explicate-control ,interp-Cvar)
-  ("instruction selection" ,select-instructions ,interp-x86-0)
-  ("uncover live", uncover-live, interp-x86-0)
-  ("build interference", build-interference, interp-x86-0)
+  ("shrink", shrink, interp-Lif)
+  ("uniquify" ,uniquify ,interp-Lif)
+  ("remove complex opera*" ,remove-complex-opera* ,interp-Lif)
+  ; ("explicate control" ,explicate-control ,interp-Cvar)
+  ; ("instruction selection" ,select-instructions ,interp-x86-0)
+  ; ("uncover live", uncover-live, interp-x86-0)
+  ; ("build interference", build-interference, interp-x86-0)
   ; ("patch instructions" ,patch-instructions ,interp-x86-0)
   ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
 ))
-
