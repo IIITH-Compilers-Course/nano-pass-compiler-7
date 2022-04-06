@@ -3,6 +3,8 @@
 
 (require "utilities.rkt")
 (require "interp-Lvar.rkt")
+(require "interp-Cif.rkt")
+(require "interp-Lif.rkt")
 (require "interp-Cvar.rkt")
 (require "interp.rkt")
 (require "compiler.rkt")
@@ -25,8 +27,9 @@
         all-tests)))
 
 ; (interp-tests "var" #f compiler-passes interp-Lvar "var_test" (tests-for "var"))
+(interp-tests "cond" #f compiler-passes interp-Lif "cond_test" (tests-for "cond"))
 
 ;; Uncomment the following when all the passes are complete to
 ;; test the final x86 code.
-(compiler-tests "var" #f compiler-passes "var_test" (tests-for "var"))
+; (compiler-tests "var" #f compiler-passes "var_test" (tests-for "var"))
 

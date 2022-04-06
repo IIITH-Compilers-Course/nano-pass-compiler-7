@@ -11,7 +11,8 @@
 	   (fprintf port "(pq-node ~a)" (node-key node)))])
 
 (define (make-node<=? <=?)
-  (lambda (x y)
+  (lambda (x y) 
+  ; (fprintf (current-output-port) "~a ~a ~%" x y)
     (<=? (node-key x) (node-key y))))
 
 (define (notify-node n index)
