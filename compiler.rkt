@@ -178,7 +178,7 @@
     (IfStmt (Prim 'eq? (list cnd (Bool #t))) thn-goto els-goto)]
     [(Let x rhs body) (explicate-assign rhs x (explicate-pred body thn els))]
     [(Prim 'not (list e)) (explicate-pred e els thn)]
-    [(Prim op es) #:when (or (eq? op 'eq?) (eq? op '<))
+    [(Prim op es) #:when (member op (list 'eq? '< '<= '> '>= 'and 'or))
     (define thn-goto (create-block thn))
     (define els-goto (create-block els))
     (IfStmt (Prim op es) thn-goto els-goto)]
@@ -227,7 +227,8 @@
 ))
 
 (define cmp-ops (list 'eq? '< '<= '> '>=))
-(define cmp-cond (list (cons 'eq? 'e) (cons '< 'l) (cons '<= 'le) (cons '> 'g) (cons '>= 'ge)))
+(define cmp-cond (list (cons 'eq? 'e) (cons '< 'g) (cons '<= 'ge) (cons '> 'l) (cons '>= 'le)))
+; (define cmp-cond (list (cons 'eq? 'e) (cons '< 'l) (cons '<= 'le) (cons '> 'g) (cons '>= 'ge)))
 
 (define (select-instructions-assign var exp) (match exp
   [(Prim 'not (list e)) (append (if (eq? (Var-name var) (Var-name e)) '() (list (Instr 'movq (list (select-instructions-atom e) var)))) (list (Instr 'xorq (list (Imm 1) var))))]
@@ -295,9 +296,12 @@
 (define (preprocess-live-after body)
   (add-vertex! globalCFG 'start)
   (calculate-program-flow 'start body)
+  (print-graph globalCFG)
   (define block-info (make-hash))
   (for ([lbl (tsort (transpose globalCFG))]) (dict-set! block-info lbl (if (equal? lbl 'conclusion) (list (cons 'label->live (set (Reg 'rax) (Reg 'rsp)))) (let ([live-afters (calculate-live-after (Block-instr* (cdr (assoc lbl body))) block-info)]) (list (cons 'live-after (cdr live-afters)) (cons 'label->live (car live-afters)))))))
-  (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (hash-ref block-info (car func)) bbody)])))
+  (displayln block-info)
+  (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (hash-ref block-info (car func) 
+  (list (cons 'no-process #t))) bbody)])))
 )
 
 (define (uncover-live p) (match p
@@ -320,12 +324,14 @@
 (define (traverse_list set_input instr) (if (empty? set_input) null (let ([_ (add_edges (car instr) (car set_input))]) (traverse_list (cdr set_input) (cdr instr)))))
 
 (define (compute-interference body)
-  (for ([func body]) (traverse_list (cdr (assoc 'live-after (Block-info (cdr func)))) (Block-instr* (cdr func))))
+  (for ([func body] #:when (not (assoc 'no-process (Block-info (cdr func))))) (traverse_list (cdr (assoc 'live-after (Block-info (cdr func)))) (Block-instr* (cdr func))))
 )
 
 (define (build-interference p) (match p
   [(X86Program info body) (compute-interference body) (X86Program (cons (cons 'conflicts conflicts) info) body)]
 ))
+
+(define available-regs (list (Reg 'rcx)))
 
 ;; Variable Allocation
 (define (color-graph graph vars)
@@ -339,62 +345,62 @@
   (for ([u (get-vertices graph)] #:when (not (hash-has-key? colors u))) (hash-set! handles u (pqueue-push! W u)))
 
   (while (not (eq? (pqueue-count W) 0))
-    (displayln nodes)
-    (displayln (heap->vector W))
-    (display "Iter start \n")
-    (define priority-node (heap-min W))
-    (define u (node-key priority-node)) 
-    ; (define u (pqueue-pop! W))
-    (displayln u)
+    (define u (pqueue-pop! W))
     (define vcols (sort (set->list (hash-ref nodes u)) <))
-    (displayln vcols)
-    (define col-alloc (foldr (lambda (a res) (if (eq? res a) (+ res 1) res)) 0 vcols))
-    (displayln col-alloc)
+    (define col-alloc (foldl (lambda (a res) (if (eq? res a) (+ res 1) res)) 0 vcols))
     (hash-set! colors u col-alloc)
-    (displayln colors)
 
     (for ([v (get-neighbors graph u)] #:when (not (hash-has-key? colors v)))
-      (displayln v)
       (hash-set! nodes v (set-add (hash-ref nodes v) col-alloc))
-      (pqueue-decrease-key! W (hash-ref handles v))
     )
-    (heap-remove! W priority-node)
-    (display "Iter done \n")
   )
-  (display colors)
+  (define var-location (make-hash))
+  (for ([cpair (hash->list colors)] #:when (not (Reg? (car cpair)))) (hash-set! var-location (Var-name (car cpair)) (if (< (cdr cpair) (length available-regs)) (list-ref available-regs (cdr cpair)) (Deref 'rbp (* 8 (- (- (length available-regs) (cdr cpair)) 1))))))
+  var-location
 )
 
+(define (assign-homes-int stmt var-locs) (match stmt
+  [(Var v) (displayln var-locs) (hash-ref var-locs v)]
+  [(Instr op args) (Instr op (for/list ([arg args]) (assign-homes-int arg var-locs)))]
+  [(Block info body) (Block info (for/list ([stmt-int body]) (assign-homes-int stmt-int var-locs)))]
+  [exp exp]
+))
+
 (define (allocate-registers p) (match p
-  [(X86Program info body) (let ([g (cdr (assoc 'conflicts info))]) (color-graph g (get-vertices g))) (X86Program info body)]
+  [(X86Program info body) (let ([var-locs (let ([g (cdr (assoc 'conflicts info))]) (color-graph g (get-vertices g)))]) (X86Program info (for/list ([func body]) (cons (car func) (assign-homes-int (cdr func) var-locs)))))]
 ))
 
 ;; patch-instructions : psuedo-x86 -> x86
-; (define (patch-instructions-temp x86_body)
-;   (match x86_body
-;     [(Block info body) (Block info (patch-instructions-new body))]
-;     ))
+(define (patch-instructions-temp x86_body)
+  (match x86_body
+    [(Block info body) (Block info (patch-instructions-new body))]
+    ))
 
-; (define (patch-instructions-new cmd-list)
-;   (cond [(empty? cmd-list) '()]
-;         [else (match (car cmd-list)
-;         [(Instr 'movq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'movq (list (Reg 'rax) (Deref 'rbp int_2) ))) (patch-instructions-new (cdr cmd-list)))]
-;         [_ (append (list (car cmd-list)) (patch-instructions-new (cdr cmd-list)))])]))
+(define (patch-instructions-new cmd-list)
+  (cond [(empty? cmd-list) '()]
+        [else (match (car cmd-list)
+          [(Instr 'movq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'movq (list (Reg 'rax) (Deref 'rbp int_2) ))) (patch-instructions-new (cdr cmd-list)))]
+          [(Instr 'movzbq (list arg1 (Deref 'rbp int_2))) (append (list (Instr 'movzbq (list arg1 (Reg 'rax))) (Instr 'movq (list (Reg 'rax) (Deref 'rbp int_2)))) (patch-instructions-new (cdr cmd-list)))]
+          [(Instr 'cmpq (list arg1 (Imm int_2))) (append (list (Instr 'movq (list (Imm int_2) (Reg 'rax))) (Instr 'cmpq (list arg1 (Reg 'rax))))(patch-instructions-new (cdr cmd-list)))]
+          [(Instr 'cmpq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'cmpq (list (Reg 'rax) (Deref 'rbp int_2)))) (patch-instructions-new (cdr cmd-list)))]
+          [_ (append (list (car cmd-list)) (patch-instructions-new (cdr cmd-list)))]
+        )]))
 
-; (define (patch-instructions p) (match p
-;   [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (patch-instructions-temp (cdr func)))))]
-; ))
+(define (patch-instructions p) (match p
+  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (patch-instructions-temp (cdr func)))))]
+))
 
-; (define (conclusion-instructions)
-;   (list (Instr 'addq (list (Imm 16) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Retq)))
+(define (conclusion-instructions)
+  (list (Instr 'addq (list (Imm 16) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Retq)))
 
-; (define (main-instructions)
-;   (list (Instr 'pushq (list (Reg 'rbp))) (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))) (Instr 'subq (list (Imm 16) (Reg 'rsp))) (Jmp 'start)))
+(define (main-instructions)
+  (list (Instr 'pushq (list (Reg 'rbp))) (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))) (Instr 'subq (list (Imm 16) (Reg 'rsp))) (Jmp 'start)))
 
-; (define (global-function)
-;   (list (Instr 'globl (list 'main))))
+(define (global-function)
+  (list (Instr 'globl (list 'main))))
 
-; (define (prelude-and-conclusion p) (match p
-;   [(X86Program info body) (X86Program info (append body (list (cons 'main (Block '() (main-instructions)))) (list (cons 'conclusion (Block '() (conclusion-instructions))))))]))
+(define (prelude-and-conclusion p) (match p
+  [(X86Program info body) (X86Program info (append body (list (cons 'main (Block '() (main-instructions)))) (list (cons 'conclusion (Block '() (conclusion-instructions))))))]))
                                      
 
 ;; Define the compiler passes to be used by interp-tests and the grader
@@ -410,6 +416,6 @@
   ("uncover live", uncover-live, interp-x86-1)
   ("build interference", build-interference, interp-x86-1)
   ("allocate registers", allocate-registers, interp-x86-1)
-  ; ("patch instructions" ,patch-instructions ,interp-x86-0)
-  ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+  ("patch instructions" ,patch-instructions ,interp-x86-1)
+  ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-1)
 ))
