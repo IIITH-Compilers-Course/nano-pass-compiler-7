@@ -10,6 +10,9 @@
 (require "interp-Cvar.rkt")
 (require "utilities.rkt")
 (require "graph-printing.rkt")
+(require "multigraph.rkt")
+(require "priority_queue.rkt")
+(require "heap.rkt")
 (provide (all-defined-out))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -99,7 +102,7 @@
   )
 )
 
-(define (rco-atom e) 
+(define (rco-atom e)
   (match e
     [(Int n) (values (Int n) '())]
     [(Var x) (values (Var x) '())]
@@ -114,6 +117,10 @@
       (define key (gensym))
       (values (Var key) (cons (list key (Prim op new-es)) (append* sss)))
     ]
+    [(If e1 e2 e3)
+      (define key (gensym))
+      (values (Var key) (list (list key (If (rco-exp e1) (rco-exp e2) (rco-exp e3)))))
+    ]
   )
 )
 
@@ -127,6 +134,7 @@
 )
 
 (define (rco-exp e)
+  ; (display e) (display "\n")
   (match e
     [(Int n) (Int n)]
     [(Var x) (Var x)]
@@ -164,11 +172,16 @@
 
 (define (explicate-pred cnd thn els)
   (match cnd
-    [(Var x) (IfStmt (Prim 'eq? (list cnd (Bool #t))) (create-block thn) (create-block els))]
+    [(Var x)
+    (define thn-goto (create-block thn))
+    (define els-goto (create-block els))
+    (IfStmt (Prim 'eq? (list cnd (Bool #t))) thn-goto els-goto)]
     [(Let x rhs body) (explicate-assign rhs x (explicate-pred body thn els))]
     [(Prim 'not (list e)) (explicate-pred e els thn)]
     [(Prim op es) #:when (or (eq? op 'eq?) (eq? op '<))
-    (IfStmt (Prim op es) (create-block thn) (create-block els))]
+    (define thn-goto (create-block thn))
+    (define els-goto (create-block els))
+    (IfStmt (Prim op es) thn-goto els-goto)]
     [(Bool b) (if b thn els)]
     [(If cnd^ thn^ els^) 
     (define thn-goto (create-block thn))
@@ -194,7 +207,10 @@
   [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
   [(Bool b) (Seq (Assign (Var x) (Bool b)) cont)]
   [(Let y rhs body) (explicate-assign rhs y (explicate-assign body x cont))]
-  [(If e1 e2 e3) (let ([gotostmt (create-block cont)]) (Seq (explicate-pred e1 (explicate-assign e2 x gotostmt) (explicate-assign e3 x gotostmt))))]
+  [(If e1 e2 e3) 
+  (define cont-goto (create-block cont))
+  (Seq (Assign (Var x) (explicate-pred e1 e2 e3)) cont-goto)]
+  ; (Seq (explicate-pred e1 (explicate-assign e2 x cont-goto) (explicate-assign e3 x cont-goto)) cont)]
   [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
   [else (error "explicate-assign unhandled case" e)]
 ))
@@ -234,56 +250,122 @@
 ))
 
 ;; uncover-live : pseudo-x86 -> pseudo-x86
+(define globalCFG (make-multigraph '()))
+
 (define (clean-for-live-after vars) (list->set (for/list ([el vars] #:when (not (Imm? el))) el)))
 
 (define (live-after-extract-writes exp) (match exp
   [(Instr 'movq es) (clean-for-live-after (cdr es))]
+  [(Instr 'movzbq es) (clean-for-live-after (cdr es))]
   [(Instr 'addq es) (clean-for-live-after (cdr es))]
   [(Instr 'subq es) (clean-for-live-after (cdr es))]
+  [(Instr 'xorq es) (clean-for-live-after (cdr es))]
   [(Instr 'negq es) (clean-for-live-after (list (car es)))]
   [_ (set)]
 ))
-(define (live-after-extract-reads exp) (match exp
+
+(define (live-after-extract-reads exp lbl-data) (match exp
   [(Instr 'movq es) (clean-for-live-after (list (car es)))]
+  [(Instr 'movzbq es) (clean-for-live-after (list (car es)))]
   [(Instr 'addq es) (clean-for-live-after es)]
   [(Instr 'subq es) (clean-for-live-after es)]
+  [(Instr 'cmpq es) (clean-for-live-after es)]
+  [(Instr 'xorq es) (clean-for-live-after es)]
   [(Instr 'negq es) (clean-for-live-after (list (car es)))]
-  [(Jmp target) (set (Reg 'rax) (Reg 'rsp))]
+  [(JmpIf cond lbl) (cdr (assoc 'label->live (hash-ref lbl-data lbl)))]
+  [(Jmp lbl) (cdr (assoc 'label->live (hash-ref lbl-data lbl)))]
   [_ (set)]
 ))
 
-(define (calculate-live-after instr)
+(define (calculate-live-after instr lbl-data)
   ; (display instr)
   (if (null? instr) (list (set))
-    (let ([live-afters (calculate-live-after (cdr instr))]) (append (list (set-union (set-subtract (car live-afters) (live-after-extract-writes (car instr))) (live-after-extract-reads (car instr)))) live-afters))
+    (let ([live-afters (calculate-live-after (cdr instr) lbl-data)]) (append (list (set-union (set-subtract (car live-afters) (live-after-extract-writes (car instr))) (live-after-extract-reads (car instr) lbl-data))) live-afters))
 ))
 
-(define (uncover-live p) (match p
-  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (list (cons 'live-after (calculate-live-after bbody))) bbody)]))))]
-))
-
-
-;;First git push
-;;Build interferece graph code
-; (define (add_edges graph_element list_input)
-;   (cond [(or (empty? list_input) (empty? (cdr list_input))) graph_element]
-;         [(has-edge? graph_element (car list_input) (cadr list_input)) (add_edges graph_element (cdr list_input))]
-;         [(has-edge? graph_element (cadr list_input) (car list_input)) (add_edges graph_element (cdr list_input))]
-;         [else (add-edge! graph_element (car list_input) (cadr list_input)) (add_edges graph_element list_input)]))
-
-(define (add_edges graph instr inp_set)
-  (define d_set (if (and (Instr? instr) (equal? (Instr-name instr) 'movq)) (set (last (Instr-arg* instr))) (live-after-extract-writes instr)))
-  (define v_set (if (and (Instr? instr) (equal? (Instr-name instr) 'movq)) (set-subtract inp_set (clean-for-live-after (Instr-arg* instr))) (set-subtract inp_set d_set)))
-  (display d_set) (display "  ") (display v_set) (display "\n")
-  (for ([d d_set]) (for ([v v_set]) (add-edge! graph d v)))
+(define (calculate-program-flow lbl body)
+  (define body-pair (assoc lbl body))
+  (if (not body-pair) '() (for ([instr (Block-instr* (cdr (assoc lbl body)))]) (match instr
+    [(JmpIf cond new-lbl) (add-vertex! globalCFG new-lbl) (add-directed-edge! globalCFG lbl new-lbl) (calculate-program-flow new-lbl body)]
+    [(Jmp new-lbl) (add-vertex! globalCFG new-lbl) (add-directed-edge! globalCFG lbl new-lbl) (calculate-program-flow new-lbl body)]
+    [_ '()]
+  )))
 )
 
-(define (traverse_list set_input instr graph_element)
-  (cond [(empty? set_input) graph_element]
-        [else (traverse_list (cdr set_input) (cdr instr) (let ([_ (add_edges graph_element (car instr) (car set_input))]) graph_element))]))
+(define (preprocess-live-after body)
+  (add-vertex! globalCFG 'start)
+  (calculate-program-flow 'start body)
+  (define block-info (make-hash))
+  (for ([lbl (tsort (transpose globalCFG))]) (dict-set! block-info lbl (if (equal? lbl 'conclusion) (list (cons 'label->live (set (Reg 'rax) (Reg 'rsp)))) (let ([live-afters (calculate-live-after (Block-instr* (cdr (assoc lbl body))) block-info)]) (list (cons 'live-after (cdr live-afters)) (cons 'label->live (car live-afters)))))))
+  (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (hash-ref block-info (car func)) bbody)])))
+)
+
+(define (uncover-live p) (match p
+  [(X86Program info body) (X86Program info (preprocess-live-after body))]
+))
+
+
+;;Build interferece graph code
+(define conflicts (undirected-graph '()))
+
+(define (remove-reg-class var) (if (Reg? var) (Reg-name var) var))
+(define (add_edges instr inp_set)
+  (define d_set (if (and (Instr? instr) (or (equal? (Instr-name instr) 'movq) (equal? (Instr-name instr) 'movzbq))) (set (last (Instr-arg* instr))) (live-after-extract-writes instr)))
+  (define v_set (if (and (Instr? instr) (or (equal? (Instr-name instr) 'movq) (equal? (Instr-name instr) 'movzbq))) (set-subtract inp_set (clean-for-live-after (Instr-arg* instr))) (set-subtract inp_set d_set)))
+  ; (display d_set) (display "  ") (display v_set) (display "\n")
+  ; (for ([d d_set]) (for ([v v_set]) (add-edge! conflicts (remove-reg-class d) (remove-reg-class v))))
+  (for ([d d_set]) (for ([v v_set]) (add-edge! conflicts d v)))
+)
+
+(define (traverse_list set_input instr) (if (empty? set_input) null (let ([_ (add_edges (car instr) (car set_input))]) (traverse_list (cdr set_input) (cdr instr)))))
+
+(define (compute-interference body)
+  (for ([func body]) (traverse_list (cdr (assoc 'live-after (Block-info (cdr func)))) (Block-instr* (cdr func))))
+)
 
 (define (build-interference p) (match p
-  [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (append (list (cons 'conflicts (print-graph (traverse_list (cddr (assoc 'live-after info)) bbody (undirected-graph '()))))) info) bbody)]))))]
+  [(X86Program info body) (compute-interference body) (X86Program (cons (cons 'conflicts conflicts) info) body)]
+))
+
+;; Variable Allocation
+(define (color-graph graph vars)
+  (define colors (make-hash (list (cons (Reg 'rax) -1) (cons (Reg 'rsp) -2))))
+  (define nodes (make-hash))
+  (define handles (make-hash))
+  (define pnode>=? (lambda (x y) (>= (set-count (hash-ref nodes x)) (set-count (hash-ref nodes y)))))
+  (define W (make-pqueue pnode>=?))
+
+  (for ([u vars] #:when (not (Reg? u))) (hash-set! nodes u (list->set (for/list ([v (get-neighbors graph u)] #:when (hash-has-key? colors v)) (hash-ref colors v)))))
+  (for ([u (get-vertices graph)] #:when (not (hash-has-key? colors u))) (hash-set! handles u (pqueue-push! W u)))
+
+  (while (not (eq? (pqueue-count W) 0))
+    (displayln nodes)
+    (displayln (heap->vector W))
+    (display "Iter start \n")
+    (define priority-node (heap-min W))
+    (define u (node-key priority-node)) 
+    ; (define u (pqueue-pop! W))
+    (displayln u)
+    (define vcols (sort (set->list (hash-ref nodes u)) <))
+    (displayln vcols)
+    (define col-alloc (foldr (lambda (a res) (if (eq? res a) (+ res 1) res)) 0 vcols))
+    (displayln col-alloc)
+    (hash-set! colors u col-alloc)
+    (displayln colors)
+
+    (for ([v (get-neighbors graph u)] #:when (not (hash-has-key? colors v)))
+      (displayln v)
+      (hash-set! nodes v (set-add (hash-ref nodes v) col-alloc))
+      (pqueue-decrease-key! W (hash-ref handles v))
+    )
+    (heap-remove! W priority-node)
+    (display "Iter done \n")
+  )
+  (display colors)
+)
+
+(define (allocate-registers p) (match p
+  [(X86Program info body) (let ([g (cdr (assoc 'conflicts info))]) (color-graph g (get-vertices g))) (X86Program info body)]
 ))
 
 ;; patch-instructions : psuedo-x86 -> x86
@@ -325,8 +407,9 @@
   ("remove complex opera*" ,remove-complex-opera* ,interp-Lif)
   ("explicate control" ,explicate-control ,interp-Cif)
   ("instruction selection" ,select-instructions ,interp-x86-1)
-  ; ("uncover live", uncover-live, interp-x86-0)
-  ; ("build interference", build-interference, interp-x86-0)
+  ("uncover live", uncover-live, interp-x86-1)
+  ("build interference", build-interference, interp-x86-1)
+  ("allocate registers", allocate-registers, interp-x86-1)
   ; ("patch instructions" ,patch-instructions ,interp-x86-0)
   ; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
 ))
