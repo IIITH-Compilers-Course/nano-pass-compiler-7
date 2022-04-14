@@ -1,0 +1,1 @@
+(let ([x 0]) (while (< x 10) (begin (begin 1 2 (set! x (+ x 0))) (set! x x) (set! x (+ x 1)) x)))

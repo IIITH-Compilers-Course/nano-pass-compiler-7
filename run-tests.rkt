@@ -8,6 +8,8 @@
 (require "interp-Cvar.rkt")
 (require "interp.rkt")
 (require "compiler.rkt")
+(require "interp-Cwhile.rkt")
+(require "interp-Lwhile.rkt")
 (debug-level 1)
 (AST-output-syntax 'concrete-syntax)
 
@@ -27,9 +29,9 @@
         all-tests)))
 
 ; (interp-tests "var" #f compiler-passes interp-Lvar "var_test" (tests-for "var"))
-(interp-tests "cond" #f compiler-passes interp-Lif "cond_test" (tests-for "cond"))
+(interp-tests "while" #f compiler-passes interp-Lwhile "while_test" (tests-for "while"))
 
 ;; Uncomment the following when all the passes are complete to
 ;; test the final x86 code.
-(compiler-tests "cond" #f compiler-passes "cond_test" (tests-for "cond"))
+; (compiler-tests "cond" #f compiler-passes "cond_test" (tests-for "cond"))
 
