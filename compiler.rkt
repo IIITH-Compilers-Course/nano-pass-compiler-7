@@ -1,6 +1,7 @@
 #lang racket
 (require racket/set racket/stream)
 (require racket/fixnum)
+(require data/queue)
 (require graph)
 (require "interp.rkt")
 (require "interp-Lint.rkt")
@@ -10,6 +11,8 @@
 (require "interp-Cvar.rkt")
 (require "interp-Cwhile.rkt")
 (require "interp-Lwhile.rkt")
+(require "interp-Cvec.rkt")
+(require "interp-Lvec-prime.rkt")
 (require "utilities.rkt")
 (require "graph-printing.rkt")
 (require "multigraph.rkt")
@@ -74,6 +77,7 @@
     [(SetBang var exp) (SetBang var (shrink-exp exp))]
     [(Begin es exp) (Begin (for/list ([e es]) (shrink-exp e)) (shrink-exp exp))]
     [(WhileLoop e1 e2) (WhileLoop (shrink-exp e1) (shrink-exp e2))]
+    [(HasType exp type) (HasType (shrink-exp exp) type)]
     [_ exp]))
 
 (define (shrink p)
@@ -99,6 +103,7 @@
       [(SetBang x exp) (SetBang (cadr (assoc x env)) ((uniquify-exp env) exp))]
       [(Begin es exp) (Begin (for/list ([e es]) ((uniquify-exp env) e)) ((uniquify-exp env) exp))]
       [(WhileLoop e1 e2) (WhileLoop ((uniquify-exp env) e1) ((uniquify-exp env) e2))]
+      [(HasType exp type) (HasType ((uniquify-exp env) exp) type)]
     )
   )
 )
@@ -110,37 +115,71 @@
   )
 )
 
+;; expose-allocation
+(define (gen-collection-comp len cont) (define bytes (+ 8 (* 8 len))) (Let (gensym '_) (If (Prim '< (list (Prim '+ (list (GlobalValue 'free_ptr) (Int bytes))) (GlobalValue 'fromspace_end))) (Void) (Collect bytes)) cont))
+
+(define (gen-vec-set names v es) (define ret (Var v))
+  (for ([i (in-range (length names))]) (set! ret (Let (gensym '_) (Prim 'vector-set! (list (Var v) (Int i) (match (list-ref es i) [(HasType (Prim 'vector es) type) (Var (list-ref names i))] [_ (list-ref es i)]))) ret)))
+ret)
+
+(define (gen-init-set names es cont) (define ret cont)
+  (for ([i (in-range (- (length names) 1) -1 -1)]) (match (list-ref es i)
+    [(HasType (Prim 'vector _) type) (set! ret (Let (list-ref names i) (expose-vec (list-ref es i)) ret))]
+    [_ null]
+  ))
+ret)
+
+(define (expose-vec exp) (match exp
+  [(Let x e body) (Let x (expose-vec e) (expose-vec body))]
+  [(Prim op es) (Prim op (for/list ([e es]) (expose-vec e)))]
+  [(If e1 e2 e3) (If (expose-vec e1) (expose-vec e2) (expose-vec e3))]
+  [(SetBang x exp) (SetBang x (expose-vec exp))]
+  [(Begin es exp) (Begin (for/list ([e es]) (expose-vec e)) (expose-vec exp))]
+  [(WhileLoop e1 e2) (WhileLoop (expose-vec e1) (expose-vec e2))]
+  [(Prim op es) (Prim op (for/list ([e es]) (expose-vec e)))]
+  [(HasType (Prim 'vector es) type) (define len (length es)) (define names (for/list ([e es]) (gensym 'vx))) (define v (gensym 'alloc)) (gen-init-set names es (gen-collection-comp len (Let v (Allocate len type) (gen-vec-set names v es))))]
+  [_ exp]
+))
+
+(define (expose-allocation p) (match p
+  [(Program info body) (Program info (expose-vec body))]
+))
+
+;; Uncover Get
 (define (collect-set! e) (match e
-  [(Var x) (set)]
-  [(Int n) (set)]
-  [(Bool b) (set)]
+  ; [(Var x) (set)]
+  ; [(Int n) (set)]
+  ; [(Bool b) (set)]
   [(Let x rhs body) (set-union (collect-set! rhs) (collect-set! body))]
   [(SetBang var rhs) (set-union (set var) (collect-set! rhs))]
   [(Prim op es) (set-union* (for/list ([e es]) (collect-set! e)))]
   [(If e1 e2 e3) (set-union (collect-set! e1) (collect-set! e2) (collect-set! e3))]
   [(Begin es exp) (set-union (set-union* (for/list ([e es]) (collect-set! e))) (collect-set! exp))]
   [(WhileLoop e1 e2) (set-union (collect-set! e1) (collect-set! e2))]
+  [_ (set)]
 ))
 
 (define ((uncover-get!-exp set!-vars) e) (match e
   [(Var x) (if (set-member? set!-vars x) (GetBang x) (Var x))]
-  [(Int n) (Int n)]
-  [(Bool b) (Bool b)]
+  ; [(Int n) (Int n)]
+  ; [(Bool b) (Bool b)]
   [(Let x e body) (Let x ((uncover-get!-exp set!-vars) e) ((uncover-get!-exp set!-vars) body))]
   [(Prim op es) (Prim op (for/list ([e es]) ((uncover-get!-exp set!-vars) e)))]
   [(If e1 e2 e3) (If ((uncover-get!-exp set!-vars) e1) ((uncover-get!-exp set!-vars) e2) ((uncover-get!-exp set!-vars) e3))]
   [(SetBang x exp) (SetBang x ((uncover-get!-exp set!-vars) exp))]
   [(Begin es exp) (Begin (for/list ([e es]) ((uncover-get!-exp set!-vars) e)) ((uncover-get!-exp set!-vars) exp))]
   [(WhileLoop e1 e2) (WhileLoop ((uncover-get!-exp set!-vars) e1) ((uncover-get!-exp set!-vars) e2))]
+  [_ e]
 ))
 
 (define (uncover-get! p) (match p [(Program info body) (Program info ((uncover-get!-exp (collect-set! body)) body))]))
 
+;; Remove Complex Operands
 (define (rco-atom e)
   (match e
-    [(Int n) (values (Int n) '())]
-    [(Var x) (values (Var x) '())]
-    [(Bool b) (values (Bool b) '())]
+    ; [(Int n) (values (Int n) '())]
+    ; [(Var x) (values (Var x) '())]
+    ; [(Bool b) (values (Bool b) '())]
     [(GetBang v) 
       (define key (gensym))
       (values (Var key) (list (list key (Var v))))
@@ -171,6 +210,19 @@
       (define key (gensym))
       (values (Var key) (list (list key (WhileLoop (rco-exp e1) (rco-exp e2)))))
     ]
+    [(Collect size)
+      (define key (gensym))
+      (values (Var key) (list (list key (Collect size))))
+    ]
+    [(Allocate amount type)
+      (define key (gensym))
+      (values (Var key) (list (list key (Allocate amount type))))
+    ]
+    [(GlobalValue name)
+      (define key (gensym))
+      (values (Var key) (list (list key (GlobalValue name))))
+    ]
+    [_ (values e '())]
   )
 )
 
@@ -184,11 +236,10 @@
 )
 
 (define (rco-exp e)
-  ; (display e) (display "\n")
   (match e
-    [(Int n) (Int n)]
-    [(Var x) (Var x)]
-    [(Bool b) (Bool b)]
+    ; [(Int n) (Int n)]
+    ; [(Var x) (Var x)]
+    ; [(Bool b) (Bool b)]
     [(GetBang v) (Var v)]
     [(Let key val body) (Let key (rco-exp val) (rco-exp body))]
     [(Prim op es)
@@ -200,16 +251,20 @@
     [(SetBang v exp) (SetBang v (rco-exp exp))]
     [(Begin es exp) (Begin (for/list ([e es]) (rco-exp e)) (rco-exp exp))]
     [(WhileLoop e1 e2) (WhileLoop (rco-exp e1) (rco-exp e2))]
+    [(Collect size) (Collect size)]
+    [(Allocate amount type) (Allocate amount type)]
+    [(GlobalValue name) (GlobalValue name)]
+    [_ e]
   )
 )
 
-;; remove-complex-opera* : R1 -> R1
 (define (remove-complex-opera* p)
   (match p
     [(Program info e) (Program info (rco-exp e))]
   )
 )
 
+;; Explicate Control
 (define basic-blocks '())
 
 (define (create-block tail)
@@ -258,7 +313,7 @@
   [(Let x rhs body) (explicate-effect rhs (explicate-effect body cont))]
   [(If e1 e2 e3) (explicate-effect e1 (explicate-effect e2 (explicate-effect e3 cont)))]
   [(SetBang v exp) (explicate-assign exp v cont)]
-  [(Begin es exp) (explicate-effect exp (foldr explicate-effect cont es))]
+  [(Begin es exp) (foldr explicate-effect (explicate-effect exp cont) es)]
   [(WhileLoop cnd body) (define loop (gensym 'loop)) (define cnd-res (explicate-pred cnd (explicate-effect body (Goto loop)) cont)) (set! basic-blocks (cons (cons loop cnd-res) basic-blocks)) (Goto loop)]
   [_ cont]
 ))
@@ -299,6 +354,7 @@
   [(Int i) (Imm i)]
   [(Var v) (Var v)]
   [(Bool b) (if b (Imm 1) (Imm 0))]
+  [(Void) (Imm 0)]
 ))
 
 (define cmp-ops (list 'eq? '< '<= '> '>=))
@@ -316,6 +372,7 @@
 
 (define (select-instructions-statement stmt) (match stmt
   [(Goto lbl) (list (Jmp lbl))]
+  [(Prim 'read '()) (list (Callq 'read_int 1))]
   [(IfStmt (Prim op (list e1 e2)) (Goto thn) (Goto els)) #:when (member op cmp-ops) (list (Instr 'cmpq (list (select-instructions-atom e1) (select-instructions-atom e2))) (JmpIf (cdr (assoc op cmp-cond)) thn) (Jmp els))]
   [(Return exp) (append (select-instructions-assign (Reg 'rax) exp) (list (Jmp 'conclusion)))]
   [(Seq (Assign var exp) cont) (append (select-instructions-assign var exp) (select-instructions-statement cont))]
@@ -340,7 +397,7 @@
   [_ (set)]
 ))
 
-(define (live-after-extract-reads exp lbl-data) (match exp
+(define (live-after-extract-reads exp) (match exp
   [(Instr 'movq es) (clean-for-live-after (list (car es)))]
   [(Instr 'movzbq es) (clean-for-live-after (list (car es)))]
   [(Instr 'addq es) (clean-for-live-after es)]
@@ -348,38 +405,58 @@
   [(Instr 'cmpq es) (clean-for-live-after es)]
   [(Instr 'xorq es) (clean-for-live-after es)]
   [(Instr 'negq es) (clean-for-live-after (list (car es)))]
-  [(JmpIf cond lbl) (cdr (assoc 'label->live (hash-ref lbl-data lbl)))]
-  [(Jmp lbl) (cdr (assoc 'label->live (hash-ref lbl-data lbl)))]
+  ; [(JmpIf cond lbl) (cdr (assoc 'label->live (hash-ref lbl-data lbl)))]
+  ; [(Jmp lbl) (cdr (assoc 'label->live (hash-ref lbl-data lbl)))]
   [_ (set)]
 ))
 
-(define (calculate-live-after instr lbl-data)
+(define (process-single-block instr initial-live-after)
   ; (display instr)
-  (if (null? instr) (list (set))
-    (let ([live-afters (calculate-live-after (cdr instr) lbl-data)]) (append (list (set-union (set-subtract (car live-afters) (live-after-extract-writes (car instr))) (live-after-extract-reads (car instr) lbl-data))) live-afters))
+  (if (null? instr) (list initial-live-after)
+    (let ([live-afters (process-single-block (cdr instr) initial-live-after)]) (append (list (set-union (set-subtract (car live-afters) (live-after-extract-writes (car instr))) (live-after-extract-reads (car instr)))) live-afters))
 ))
 
-(define (calculate-program-flow lbl body)
-  (define body-pair (assoc lbl body))
-  (if (not body-pair) '() (for ([instr (Block-instr* (cdr (assoc lbl body)))]) (match instr
-    [(JmpIf cond new-lbl) (add-vertex! globalCFG new-lbl) (add-directed-edge! globalCFG lbl new-lbl) (calculate-program-flow new-lbl body)]
-    [(Jmp new-lbl) (add-vertex! globalCFG new-lbl) (add-directed-edge! globalCFG lbl new-lbl) (calculate-program-flow new-lbl body)]
+(define (calculate-program-flow body) (for ([body-pair body])
+  (for ([instr (Block-instr* (cdr body-pair))]) (match instr
+    [(JmpIf cond new-lbl) (add-vertex! globalCFG new-lbl) (add-directed-edge! globalCFG (car body-pair) new-lbl) ]
+    [(Jmp new-lbl) (add-vertex! globalCFG new-lbl) (add-directed-edge! globalCFG (car body-pair) new-lbl)]
     [_ '()]
-  )))
-)
+  ))
+))
 
 (define (preprocess-live-after body)
   (add-vertex! globalCFG 'start)
-  (calculate-program-flow 'start body)
-  (print-graph globalCFG)
-  (define block-info (make-hash))
-  (for ([lbl (tsort (transpose globalCFG))]) (dict-set! block-info lbl (if (equal? lbl 'conclusion) (list (cons 'label->live (set (Reg 'rax) (Reg 'rsp)))) (let ([live-afters (calculate-live-after (Block-instr* (cdr (assoc lbl body))) block-info)]) (list (cons 'live-after (cdr live-afters)) (cons 'label->live (car live-afters)))))))
-  (displayln block-info)
-  (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (hash-ref block-info (car func) 
-  (list (cons 'no-process #t))) bbody)])))
+  (calculate-program-flow body)
+  (define inverted-globalCFG (transpose globalCFG))
+  (remove-vertex! inverted-globalCFG 'conclusion)
+
+  (define live-before-blocks (make-hash))
+  (define live-afters-blocks (make-hash))
+  (define process-queue (make-queue))
+  (for ([v (get-vertices inverted-globalCFG)]) (hash-set! live-before-blocks v (set)) (enqueue! process-queue v))
+  (hash-set! live-before-blocks 'conclusion (set (Reg 'rax) (Reg 'rsp)))
+
+  (while (not (queue-empty? process-queue))
+    ; (displayln (hash->list live-before-blocks))
+    ; (displayln (queue->list process-queue))
+    (define u (dequeue! process-queue))
+    ; (displayln u)
+    (define block-live-after (foldl set-union (set) (for/list ([v (get-neighbors globalCFG u)]) (hash-ref live-before-blocks v (set)))))
+    ; (displayln block-live-after)
+    (define live-afters (process-single-block (Block-instr* (cdr (assoc u body))) block-live-after))
+    ; (displayln live-afters)
+    (if (not (set=? (car live-afters) (hash-ref live-before-blocks u (set)))) (for ([v (get-neighbors inverted-globalCFG u)]) (enqueue! process-queue v)) null)
+    (hash-set! live-before-blocks u (car live-afters))
+    (hash-set! live-afters-blocks u (cdr live-afters))
+    ; (displayln (hash-ref live-before-blocks u (set)))
+    ; (display "\n")
+  )
+  (displayln live-before-blocks)
+
+  (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (list (if (hash-has-key? live-afters-blocks (car func)) (cons 'live-after (hash-ref live-afters-blocks (car func))) (cons 'no-process #t))) bbody)])))
 )
 
-(define (uncover-live p) (set! globalCFG (make-multigraph '())) (match p
+(define (analyze-dataflow p) (set! globalCFG (make-multigraph '())) (match p
   [(X86Program info body) (X86Program info (preprocess-live-after body))]
 ))
 
@@ -483,13 +560,14 @@
 ;; must be named "compiler.rkt"
 (define compiler-passes `(
   ; ("partial evaluator", pe-Lint, interp-Lvar)
-  ("shrink", shrink, interp-Lwhile)
-  ("uniquify" ,uniquify ,interp-Lwhile)
-  ("uncover get!", uncover-get!, interp-Lwhile)
-  ("remove complex opera*" ,remove-complex-opera* ,interp-Lwhile)
-  ("explicate control" ,explicate-control ,interp-Cwhile)
+  ("shrink", shrink, interp-Lvec-prime)
+  ("uniquify" ,uniquify, interp-Lvec-prime)
+  ("expose allocation", expose-allocation, interp-Lvec-prime)
+  ("uncover get!", uncover-get!, interp-Lvec-prime)
+  ("remove complex opera*" ,remove-complex-opera*, interp-Lvec-prime)
+  ("explicate control" ,explicate-control, interp-Cvec)
   ; ("instruction selection" ,select-instructions ,interp-x86-1)
-  ; ("uncover live", uncover-live, interp-x86-1)
+  ; ("analyze dataflow", analyze-dataflow, interp-x86-1)
   ; ("build interference", build-interference, interp-x86-1)
   ; ("allocate registers", allocate-registers, interp-x86-1)
   ; ("patch instructions" ,patch-instructions ,interp-x86-1)

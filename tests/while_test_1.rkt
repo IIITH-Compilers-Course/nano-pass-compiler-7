@@ -1,1 +1,1 @@
-(let ([x 0]) (while (< x 10) (begin (begin 1 2 (set! x (+ x 0))) (set! x x) (set! x (+ x 1)) x)))
+(let ([sum 0]) (let ([i 5]) (begin (while (> i 0) (begin (set! sum (+ sum i)) (set! i (- i 1)))) sum)))
