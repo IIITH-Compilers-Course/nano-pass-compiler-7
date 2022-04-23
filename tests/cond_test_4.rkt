@@ -1,1 +1,1 @@
-(if (if (let ([x #t]) (not x)) #t #f) (if (let ([x (if #f 3 4)]) (eq? x 4)) 4 5) (if #t 4 (< 3 5)))
+(if (if (let ([x #t]) (not x)) #t #f) (if (let ([x (if #f 3 4)]) (eq? x 4)) 4 5) (if #t 4 3))

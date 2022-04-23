@@ -12,6 +12,10 @@
 (require "graph-printing.rkt")
 (require "multigraph.rkt")
 (require "priority_queue.rkt")
+(require "type-check-Lif.rkt")
+(require "type-check-Cif.rkt")
+(require "type-check-Lvar.rkt")
+(require "type-check-Cvar.rkt")
 (require "heap.rkt")
 (provide (all-defined-out))
 
@@ -115,7 +119,7 @@
       (define-values (new-es sss)
         (for/lists (l1 l2) ([e es]) (rco-atom e)))
       (define key (gensym))
-      (values (Var key) (cons (list key (Prim op new-es)) (append* sss)))
+      (values (Var key) (append (append* sss) (list (list key (Prim op new-es))))) ;? Changed order of appending - new is sss followed key element - old was key element followed by sss
     ]
     [(If e1 e2 e3)
       (define key (gensym))
@@ -209,13 +213,13 @@
   [(Let y rhs body) (explicate-assign rhs y (explicate-assign body x cont))]
   [(If e1 e2 e3) 
   (define cont-goto (create-block cont))
-  (Seq (Assign (Var x) (explicate-pred e1 e2 e3)) cont-goto)]
-  ; (Seq (explicate-pred e1 (explicate-assign e2 x cont-goto) (explicate-assign e3 x cont-goto)) cont)]
+  ; (Seq (Assign (Var x) (explicate-pred e1 e2 e3)) cont-goto)]
+  (explicate-pred e1 (explicate-assign e2 x cont-goto) (explicate-assign e3 x cont-goto))] ;? The old line is commented above for reference.
   [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
   [else (error "explicate-assign unhandled case" e)]
 ))
 
-(define (explicate-control p) (match p
+(define (explicate-control p) (set! basic-blocks '()) (match p
   [(Program info body) (CProgram info (append (list (cons 'start (explicate-tail body))) basic-blocks))]
 ))
 
@@ -296,15 +300,15 @@
 (define (preprocess-live-after body)
   (add-vertex! globalCFG 'start)
   (calculate-program-flow 'start body)
-  (print-graph globalCFG)
+  ; (print-graph globalCFG)
   (define block-info (make-hash))
   (for ([lbl (tsort (transpose globalCFG))]) (dict-set! block-info lbl (if (equal? lbl 'conclusion) (list (cons 'label->live (set (Reg 'rax) (Reg 'rsp)))) (let ([live-afters (calculate-live-after (Block-instr* (cdr (assoc lbl body))) block-info)]) (list (cons 'live-after (cdr live-afters)) (cons 'label->live (car live-afters)))))))
-  (displayln block-info)
+  ; (displayln block-info)
   (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (hash-ref block-info (car func) 
   (list (cons 'no-process #t))) bbody)])))
 )
 
-(define (uncover-live p) (match p
+(define (uncover-live p) (set! globalCFG (make-multigraph '())) (match p
   [(X86Program info body) (X86Program info (preprocess-live-after body))]
 ))
 
@@ -327,7 +331,7 @@
   (for ([func body] #:when (not (assoc 'no-process (Block-info (cdr func))))) (traverse_list (cdr (assoc 'live-after (Block-info (cdr func)))) (Block-instr* (cdr func))))
 )
 
-(define (build-interference p) (match p
+(define (build-interference p) (set! conflicts (undirected-graph '())) (match p
   [(X86Program info body) (compute-interference body) (X86Program (cons (cons 'conflicts conflicts) info) body)]
 ))
 
@@ -335,13 +339,13 @@
 
 ;; Variable Allocation
 (define (color-graph graph vars)
-  (define colors (make-hash (list (cons (Reg 'rax) -1) (cons (Reg 'rsp) -2))))
+  (define colors (make-hash (list (cons (Reg 'rax) -1) (cons (Reg 'rsp) -2) (cons (ByteReg 'al) -3)))) ;? Added the %al register (We did not encounter this error during our testing for some reason)
   (define nodes (make-hash))
   (define handles (make-hash))
   (define pnode>=? (lambda (x y) (>= (set-count (hash-ref nodes x)) (set-count (hash-ref nodes y)))))
   (define W (make-pqueue pnode>=?))
 
-  (for ([u vars] #:when (not (Reg? u))) (hash-set! nodes u (list->set (for/list ([v (get-neighbors graph u)] #:when (hash-has-key? colors v)) (hash-ref colors v)))))
+  (for ([u vars] #:when (Var? u)) (hash-set! nodes u (list->set (for/list ([v (get-neighbors graph u)] #:when (hash-has-key? colors v)) (hash-ref colors v))))) ;? Replaced #:when (not (Reg? u)) with #:when (Var? u) to accommodate for %al
   (for ([u (get-vertices graph)] #:when (not (hash-has-key? colors u))) (hash-set! handles u (pqueue-push! W u)))
 
   (while (not (eq? (pqueue-count W) 0))
@@ -355,12 +359,12 @@
     )
   )
   (define var-location (make-hash))
-  (for ([cpair (hash->list colors)] #:when (not (Reg? (car cpair)))) (hash-set! var-location (Var-name (car cpair)) (if (< (cdr cpair) (length available-regs)) (list-ref available-regs (cdr cpair)) (Deref 'rbp (* 8 (- (- (length available-regs) (cdr cpair)) 1))))))
+  (for ([cpair (hash->list colors)] #:when (Var? (car cpair))) (hash-set! var-location (Var-name (car cpair)) (if (< (cdr cpair) (length available-regs)) (list-ref available-regs (cdr cpair)) (Deref 'rbp (* 8 (- (- (length available-regs) (cdr cpair)) 1)))))) ;? Replaced #:when (not (Reg? (car cpair))) with #:when (Var? (car cpair)) to accommodate for %al - Duplicate of previous alteration (counting both as the same change, we have 4 changes in total)
   var-location
 )
 
 (define (assign-homes-int stmt var-locs) (match stmt
-  [(Var v) (displayln var-locs) (hash-ref var-locs v)]
+  [(Var v) (hash-ref var-locs v)]
   [(Instr op args) (Instr op (for/list ([arg args]) (assign-homes-int arg var-locs)))]
   [(Block info body) (Block info (for/list ([stmt-int body]) (assign-homes-int stmt-int var-locs)))]
   [exp exp]
@@ -408,10 +412,10 @@
 ;; must be named "compiler.rkt"
 (define compiler-passes `(
   ; ("partial evaluator", pe-Lint, interp-Lvar)
-  ("shrink", shrink, interp-Lif)
-  ("uniquify" ,uniquify ,interp-Lif)
-  ("remove complex opera*" ,remove-complex-opera* ,interp-Lif)
-  ("explicate control" ,explicate-control ,interp-Cif)
+  ("shrink", shrink, interp-Lif, type-check-Lif)
+  ("uniquify" ,uniquify ,interp-Lif, type-check-Lif)
+  ("remove complex opera*" ,remove-complex-opera* ,interp-Lif, type-check-Lif)
+  ("explicate control" ,explicate-control ,interp-Cif, type-check-Cif)
   ("instruction selection" ,select-instructions ,interp-x86-1)
   ("uncover live", uncover-live, interp-x86-1)
   ("build interference", build-interference, interp-x86-1)

@@ -1,1 +1,1 @@
-(and #t #f)
+(let ([x (and #t #f)]) 42)
