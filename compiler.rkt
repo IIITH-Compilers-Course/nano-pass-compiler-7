@@ -310,16 +310,19 @@ ret)
   ; [(Bool b) cont]
   ; [(Prim op es) cont]
   [(Prim 'read '()) (Seq e cont)]
+  [(Collect size) (Seq e cont)]
   [(Let x rhs body) (explicate-effect rhs (explicate-effect body cont))]
   [(If e1 e2 e3) (explicate-effect e1 (explicate-effect e2 (explicate-effect e3 cont)))]
   [(SetBang v exp) (explicate-assign exp v cont)]
   [(Begin es exp) (foldr explicate-effect (explicate-effect exp cont) es)]
   [(WhileLoop cnd body) (define loop (gensym 'loop)) (define cnd-res (explicate-pred cnd (explicate-effect body (Goto loop)) cont)) (set! basic-blocks (cons (cons loop cnd-res) basic-blocks)) (Goto loop)]
+  [(Allocate amount type) (Seq e cont)]
   [_ cont]
 ))
 
 ;; explicate-control : R1 -> C0
 (define (explicate-tail e) (displayln e) (match e
+  [(Void) (Return (Void))]
   [(Var x) (Return (Var x))]
   [(Int n) (Return (Int n))]
   [(Bool b) (Return (Bool b))]
@@ -329,19 +332,26 @@ ret)
   [(SetBang v exp) (explicate-effect e (Return (Void)))]
   [(Begin es exp) (foldr explicate-effect (explicate-tail exp) es)]
   [(WhileLoop cnd body) (explicate-effect e (Return (Void)))]
+  [(Allocate amount type) (Return e)]
+  [(GlobalValue lbl) (Return e)]
+  [(Collect size) (explicate-effect e (Return (Void)))]
   [else (error "explicate-tail unhandled case" e)]
 ))
 
 (define (explicate-assign e x cont) (match e
+  [(Void) (Seq (Assign (Var x) (Void)) cont)]
   [(Var x_int) (Seq (Assign (Var x) (Var x_int)) cont)]
   [(Int n) (Seq (Assign (Var x) (Int n)) cont)]
   [(Bool b) (Seq (Assign (Var x) (Bool b)) cont)]
   [(Let y rhs body) (explicate-assign rhs y (explicate-assign body x cont))]
-  [(If e1 e2 e3) (define cont-goto (create-block cont)) (Seq (Assign (Var x) (explicate-pred e1 e2 e3)) cont-goto)]
+  [(If e1 e2 e3) (define cont-goto (create-block cont)) (explicate-pred e1 (explicate-assign e2 x cont-goto) (explicate-assign e3 x cont-goto))]
   [(Prim op es) (Seq (Assign (Var x) (Prim op es)) cont)]
   [(SetBang v exp) (explicate-effect e (Seq (Assign (Var x) (Void)) cont))]
   [(Begin es exp) (foldr explicate-effect (explicate-assign exp x cont) es)]
   [(WhileLoop cnd body) (explicate-effect e (Seq (Assign (Var x) (Void)) cont))]
+  [(Allocate amount type) (Seq (Assign (Var x) e) cont)]
+  [(GlobalValue lbl) (Seq (Assign (Var x) e) cont)]
+  [(Collect size) (explicate-effect e cont)]
   [else (error "explicate-assign unhandled case" e)]
 ))
 
@@ -361,25 +371,69 @@ ret)
 (define cmp-cond (list (cons 'eq? 'e) (cons '< 'g) (cons '<= 'ge) (cons '> 'l) (cons '>= 'le)))
 ; (define cmp-cond (list (cons 'eq? 'e) (cons '< 'l) (cons '<= 'le) (cons '> 'g) (cons '>= 'ge)))
 
+(define (list->number ls) (if (empty? ls) 0 
+  (if (equal? 1 (car ls))
+    (+ (list->number (cdr ls)) (expt 2 (length (cdr ls))))
+    (list->number (cdr ls))
+  )
+))
+
+(define (calculate-tag len type)
+  (define type-bits (arithmetic-shift (list->number (for/list ([t type]) (if (and (list? t) (equal? (car t) 'Vector)) 1 0))) 7))
+  (define len-bits (bitwise-ior (arithmetic-shift len 1) 1))
+  (bitwise-ior type-bits len-bits)
+)
+
 (define (select-instructions-assign var exp) (match exp
+  [(GlobalValue lbl) (list (Instr 'movq (list (Global lbl) var)))]
+  [(Prim 'vector-ref (list tup n)) (list 
+    (Instr 'movq (list (select-instructions-atom tup) (Reg 'r11))) 
+    (Instr 'movq (list (Deref 'r11 (* 8 (+ (Int-value n) 1))) var))
+  )]
+  [(Prim 'vector-set! (list tup n rhs)) (list 
+    (Instr 'movq (list (select-instructions-atom tup) (Reg 'r11))) 
+    (Instr 'movq (list (select-instructions-atom rhs) (Deref 'r11 (* 8 (+ (Int-value n) 1)))))
+    (Instr 'movq (list (Imm 0) var))
+  )]
+  [(Prim 'vector-length (list tup)) (list
+    (Instr 'movq (list (select-instructions-atom tup) (Reg 'rax)))
+    (Instr 'sarq (list (Imm 1) (Reg 'rax)))
+    (Instr 'andq (list (Imm 63) (Reg 'rax)))
+    (Instr 'movq (list (Reg 'rax) var))
+  )]
+  [(Allocate len type) (list
+    (Instr 'movq (list (Global 'free_ptr) (Reg 'r11)))
+    (Instr 'addq (list (Imm (* 8 (+ len 1))) (Global 'free_ptr)))
+    (Instr 'movq (list (Imm (calculate-tag len type)) (Deref 'r11 0)))
+    (Instr 'movq (list (Reg 'r11) var))
+  )]
   [(Prim 'not (list e)) (append (if (eq? (Var-name var) (Var-name e)) '() (list (Instr 'movq (list (select-instructions-atom e) var)))) (list (Instr 'xorq (list (Imm 1) var))))]
-  [(Prim op (list e1 e2)) #:when (member op cmp-ops) (list (Instr 'cmpq (list (select-instructions-atom e1) (select-instructions-atom e2))) (Instr 'set (list (cdr (assoc op cmp-cond)) (ByteReg 'al))) (Instr 'movzbq (list (ByteReg 'al) var)))]
+  [(Prim op (list e1 e2)) #:when (member op cmp-ops) (list 
+    (Instr 'cmpq (list (select-instructions-atom e1) (select-instructions-atom e2))) 
+    (Instr 'set (list (cdr (assoc op cmp-cond)) (ByteReg 'al))) (Instr 'movzbq (list (ByteReg 'al) var))
+  )]
   [(Prim 'read '()) (list (Callq 'read_int 1) (Instr 'movq (list (Reg 'rax) var)))]
   [(Prim '- (list e)) (list (Instr 'movq (list (select-instructions-atom e) var)) (Instr 'negq (list var)))]
   [(Prim op (list e1 e2)) (list (Instr 'movq (list (select-instructions-atom e1) var)) (Instr (if (equal? op '+) 'addq 'subq) (list (select-instructions-atom e2) var)))]
   [_ (list (Instr 'movq (list (select-instructions-atom exp) var)))]
 ))
 
-(define (select-instructions-statement stmt) (match stmt
+(define (select-instructions-statement stmt) (displayln stmt) (match stmt
+  [(Collect bytes) (list (Instr 'movq (list (Reg 'r15) (Reg 'rdi))) (Instr 'movq (list (Imm bytes) (Reg 'rsi))) (Callq 'collect 2))]
+  [(Prim 'vector-set! (list tup n rhs)) (list 
+    (Instr 'movq (list (select-instructions-atom tup) (Reg 'r11))) 
+    (Instr 'movq (list (select-instructions-atom rhs) (Deref 'r11 (* 8 (+ (Int-value n) 1)))))
+  )]
   [(Goto lbl) (list (Jmp lbl))]
   [(Prim 'read '()) (list (Callq 'read_int 1))]
   [(IfStmt (Prim op (list e1 e2)) (Goto thn) (Goto els)) #:when (member op cmp-ops) (list (Instr 'cmpq (list (select-instructions-atom e1) (select-instructions-atom e2))) (JmpIf (cdr (assoc op cmp-cond)) thn) (Jmp els))]
   [(Return exp) (append (select-instructions-assign (Reg 'rax) exp) (list (Jmp 'conclusion)))]
-  [(Seq (Assign var exp) cont) (append (select-instructions-assign var exp) (select-instructions-statement cont))]
+  [(Assign var exp) (select-instructions-assign var exp)]
+  [(Seq stmt cont) (append (select-instructions-statement stmt) (select-instructions-statement cont))]
 ))
 
 (define (select-instructions p) (match p
-  [(CProgram info body) (X86Program info (for/list ([func body]) (cons (car func) (Block '() (select-instructions-statement (cdr func))))))]
+  [(CProgram info body) (X86Program (cons (cons 'num-root-spills 0) info) (for/list ([func body]) (cons (car func) (Block '() (select-instructions-statement (cdr func))))))]
 ))
 
 ;; uncover-live : pseudo-x86 -> pseudo-x86
@@ -487,13 +541,13 @@ ret)
 
 ;; Variable Allocation
 (define (color-graph graph vars)
-  (define colors (make-hash (list (cons (Reg 'rax) -1) (cons (Reg 'rsp) -2))))
+  (define colors (make-hash (list (cons (Reg 'rax) -1) (cons (Reg 'rsp) -2) (cons (ByteReg 'al) -3))))
   (define nodes (make-hash))
   (define handles (make-hash))
   (define pnode>=? (lambda (x y) (>= (set-count (hash-ref nodes x)) (set-count (hash-ref nodes y)))))
   (define W (make-pqueue pnode>=?))
 
-  (for ([u vars] #:when (not (Reg? u))) (hash-set! nodes u (list->set (for/list ([v (get-neighbors graph u)] #:when (hash-has-key? colors v)) (hash-ref colors v)))))
+  (for ([u vars] #:when (Var? u)) (hash-set! nodes u (list->set (for/list ([v (get-neighbors graph u)] #:when (hash-has-key? colors v)) (hash-ref colors v)))))
   (for ([u (get-vertices graph)] #:when (not (hash-has-key? colors u))) (hash-set! handles u (pqueue-push! W u)))
 
   (while (not (eq? (pqueue-count W) 0))
@@ -507,7 +561,7 @@ ret)
     )
   )
   (define var-location (make-hash))
-  (for ([cpair (hash->list colors)] #:when (not (Reg? (car cpair)))) (hash-set! var-location (Var-name (car cpair)) (if (< (cdr cpair) (length available-regs)) (list-ref available-regs (cdr cpair)) (Deref 'rbp (* 8 (- (- (length available-regs) (cdr cpair)) 1))))))
+  (for ([cpair (hash->list colors)] #:when (Var? (car cpair))) (hash-set! var-location (Var-name (car cpair)) (if (< (cdr cpair) (length available-regs)) (list-ref available-regs (cdr cpair)) (Deref 'rbp (* 8 (- (- (length available-regs) (cdr cpair)) 1))))))
   var-location
 )
 
@@ -566,7 +620,7 @@ ret)
   ("uncover get!", uncover-get!, interp-Lvec-prime)
   ("remove complex opera*" ,remove-complex-opera*, interp-Lvec-prime)
   ("explicate control" ,explicate-control, interp-Cvec)
-  ; ("instruction selection" ,select-instructions ,interp-x86-1)
+  ("instruction selection" ,select-instructions ,interp-x86-2)
   ; ("analyze dataflow", analyze-dataflow, interp-x86-1)
   ; ("build interference", build-interference, interp-x86-1)
   ; ("allocate registers", allocate-registers, interp-x86-1)
