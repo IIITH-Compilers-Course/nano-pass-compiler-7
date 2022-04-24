@@ -8,6 +8,11 @@
 (require "interp-Cvar.rkt")
 (require "interp.rkt")
 (require "compiler.rkt")
+(require "interp-Cwhile.rkt")
+(require "interp-Lwhile.rkt")
+(require "interp-Cvec.rkt")
+(require "interp-Lvec-prime.rkt")
+(require "type-check-Lvec.rkt")
 (debug-level 1)
 (AST-output-syntax 'concrete-syntax)
 
@@ -27,9 +32,10 @@
         all-tests)))
 
 ; (interp-tests "var" #f compiler-passes interp-Lvar "var_test" (tests-for "var"))
-(interp-tests "cond" #f compiler-passes interp-Lif "cond_test" (tests-for "cond"))
+; (interp-tests "vectors" type-check-Lvec compiler-passes interp-Lvec-prime "vectors_test" (tests-for "vectors"))
 
 ;; Uncomment the following when all the passes are complete to
 ;; test the final x86 code.
-(compiler-tests "cond" #f compiler-passes "cond_test" (tests-for "cond"))
+; (compiler-tests "temp" #f compiler-passes "temp_test" (tests-for "temp"))
+(compiler-tests "vectors" type-check-Lvec compiler-passes "vectors_test" (tests-for "vectors"))
 
