@@ -247,7 +247,8 @@
   [(Goto lbl) (list (Jmp lbl))]
   [(IfStmt (Prim op (list e1 e2)) (Goto thn) (Goto els)) #:when (member op cmp-ops) (list (Instr 'cmpq (list (select-instructions-atom e1) (select-instructions-atom e2))) (JmpIf (cdr (assoc op cmp-cond)) thn) (Jmp els))]
   [(Return exp) (append (select-instructions-assign (Reg 'rax) exp) (list (Jmp 'conclusion)))]
-  [(Seq (Assign var exp) cont) (append (select-instructions-assign var exp) (select-instructions-statement cont))]
+  [(Assign var exp) (select-instructions-assign var exp)]
+  [(Seq stmt cont) (append (select-instructions-statement stmt) (select-instructions-statement cont))]
 ))
 
 (define (select-instructions p) (match p
@@ -259,6 +260,9 @@
 
 (define (clean-for-live-after vars) (list->set (for/list ([el vars] #:when (not (Imm? el))) el)))
 
+(define caller-saved (list (Reg 'rax) (Reg 'rcx) (Reg 'rdx) (Reg 'rsi) (Reg 'rdi) (Reg 'r8 )(Reg 'r9 )(Reg 'r10) (Reg 'r11)))
+(define callee-saved (list (Reg 'rsp) (Reg 'rbp) (Reg 'rbx) (Reg 'r12) (Reg 'r13) (Reg 'r14) (Reg 'r15)))
+
 (define (live-after-extract-writes exp) (match exp
   [(Instr 'movq es) (clean-for-live-after (cdr es))]
   [(Instr 'movzbq es) (clean-for-live-after (cdr es))]
@@ -266,6 +270,7 @@
   [(Instr 'subq es) (clean-for-live-after (cdr es))]
   [(Instr 'xorq es) (clean-for-live-after (cdr es))]
   [(Instr 'negq es) (clean-for-live-after (list (car es)))]
+  [(Callq lbl arity) (list->set caller-saved)]
   [_ (set)]
 ))
 
@@ -279,6 +284,7 @@
   [(Instr 'negq es) (clean-for-live-after (list (car es)))]
   [(JmpIf cond lbl) (cdr (assoc 'label->live (hash-ref lbl-data lbl)))]
   [(Jmp lbl) (cdr (assoc 'label->live (hash-ref lbl-data lbl)))]
+  [(Callq lbl arity) (list->set (take callee-saved arity))]
   [_ (set)]
 ))
 
@@ -304,8 +310,7 @@
   (define block-info (make-hash))
   (for ([lbl (tsort (transpose globalCFG))]) (dict-set! block-info lbl (if (equal? lbl 'conclusion) (list (cons 'label->live (set (Reg 'rax) (Reg 'rsp)))) (let ([live-afters (calculate-live-after (Block-instr* (cdr (assoc lbl body))) block-info)]) (list (cons 'live-after (cdr live-afters)) (cons 'label->live (car live-afters)))))))
   ; (displayln block-info)
-  (for/list ([func body]) (cons (car func) (match (cdr func) [(Block info bbody) (Block (hash-ref block-info (car func) 
-  (list (cons 'no-process #t))) bbody)])))
+  (for/list ([func body] #:when (hash-has-key? block-info (car func))) (cons (car func) (match (cdr func) [(Block info bbody) (Block (hash-ref block-info (car func)) bbody)])))
 )
 
 (define (uncover-live p) (set! globalCFG (make-multigraph '())) (match p
@@ -335,11 +340,14 @@
   [(X86Program info body) (compute-interference body) (X86Program (cons (cons 'conflicts conflicts) info) body)]
 ))
 
-(define available-regs (list (Reg 'rcx)))
+(define available-regs (list))
 
 ;; Variable Allocation
 (define (color-graph graph vars)
-  (define colors (make-hash (list (cons (Reg 'rax) -1) (cons (Reg 'rsp) -2) (cons (ByteReg 'al) -3)))) ;? Added the %al register (We did not encounter this error during our testing for some reason)
+  ; (define colors (make-hash (list (cons (Reg 'rax) -1) (cons (Reg 'rsp) -2) (cons (ByteReg 'al) -3)))) ;? Added the %al register (We did not encounter this error during our testing for some reason)
+  (define all-registers (append caller-saved callee-saved))
+  (define reg-idx-end (- (- (length all-registers)) 1))
+  (define colors (make-hash (append (for/list ([reg all-registers] [idx (in-range -1 reg-idx-end -1)]) (cons reg idx)) (list (cons (ByteReg 'al) reg-idx-end)))))
   (define nodes (make-hash))
   (define handles (make-hash))
   (define pnode>=? (lambda (x y) (>= (set-count (hash-ref nodes x)) (set-count (hash-ref nodes y)))))
@@ -370,8 +378,10 @@
   [exp exp]
 ))
 
+(define (calculate-stack-space var-locs) (let ([ret (apply + (for/list ([var-pair var-locs]) (if (Deref? (cdr var-pair)) 8 0)))]) (+ ret (remainder ret 16))))
+
 (define (allocate-registers p) (match p
-  [(X86Program info body) (let ([var-locs (let ([g (cdr (assoc 'conflicts info))]) (color-graph g (get-vertices g)))]) (X86Program info (for/list ([func body]) (cons (car func) (assign-homes-int (cdr func) var-locs)))))]
+  [(X86Program info body) (define var-locs (let ([g (cdr (assoc 'conflicts info))]) (color-graph g (get-vertices g)))) (X86Program (cons (cons 'stack-space (calculate-stack-space (hash->list var-locs))) info) (for/list ([func body]) (cons (car func) (assign-homes-int (cdr func) var-locs))))]
 ))
 
 ;; patch-instructions : psuedo-x86 -> x86
@@ -383,10 +393,13 @@
 (define (patch-instructions-new cmd-list)
   (cond [(empty? cmd-list) '()]
         [else (match (car cmd-list)
+          [(Instr 'movq (list loc1 loc2)) #:when (equal? loc1 loc2) (patch-instructions-new (cdr cmd-list))]
           [(Instr 'movq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'movq (list (Reg 'rax) (Deref 'rbp int_2) ))) (patch-instructions-new (cdr cmd-list)))]
           [(Instr 'movzbq (list arg1 (Deref 'rbp int_2))) (append (list (Instr 'movzbq (list arg1 (Reg 'rax))) (Instr 'movq (list (Reg 'rax) (Deref 'rbp int_2)))) (patch-instructions-new (cdr cmd-list)))]
           [(Instr 'cmpq (list arg1 (Imm int_2))) (append (list (Instr 'movq (list (Imm int_2) (Reg 'rax))) (Instr 'cmpq (list arg1 (Reg 'rax))))(patch-instructions-new (cdr cmd-list)))]
           [(Instr 'cmpq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'cmpq (list (Reg 'rax) (Deref 'rbp int_2)))) (patch-instructions-new (cdr cmd-list)))]
+          [(Instr 'addq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'addq (list (Reg 'rax) (Deref 'rbp int_2)))) (patch-instructions-new (cdr cmd-list)))]
+          [(Instr 'subq (list (Deref 'rbp int_1) (Deref 'rbp int_2))) (append (list (Instr 'movq (list (Deref 'rbp int_1) (Reg 'rax))) (Instr 'subq (list (Reg 'rax) (Deref 'rbp int_2)))) (patch-instructions-new (cdr cmd-list)))]
           [_ (append (list (car cmd-list)) (patch-instructions-new (cdr cmd-list)))]
         )]))
 
@@ -394,17 +407,17 @@
   [(X86Program info body) (X86Program info (for/list ([func body]) (cons (car func) (patch-instructions-temp (cdr func)))))]
 ))
 
-(define (conclusion-instructions)
-  (list (Instr 'addq (list (Imm 16) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Retq)))
+(define (conclusion-instructions stack-space)
+  (list (Instr 'addq (list (Imm stack-space) (Reg 'rsp))) (Instr 'popq (list (Reg 'rbp))) (Retq)))
 
-(define (main-instructions)
-  (list (Instr 'pushq (list (Reg 'rbp))) (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))) (Instr 'subq (list (Imm 16) (Reg 'rsp))) (Jmp 'start)))
+(define (main-instructions stack-space)
+  (list (Instr 'pushq (list (Reg 'rbp))) (Instr 'movq (list (Reg 'rsp) (Reg 'rbp))) (Instr 'subq (list (Imm stack-space) (Reg 'rsp))) (Jmp 'start)))
 
 (define (global-function)
   (list (Instr 'globl (list 'main))))
 
 (define (prelude-and-conclusion p) (match p
-  [(X86Program info body) (X86Program info (append body (list (cons 'main (Block '() (main-instructions)))) (list (cons 'conclusion (Block '() (conclusion-instructions))))))]))
+  [(X86Program info body) (X86Program info (append body (list (cons 'main (Block '() (main-instructions (cdr (assoc 'stack-space info)))))) (list (cons 'conclusion (Block '() (conclusion-instructions (cdr (assoc 'stack-space info))))))))]))
                                      
 
 ;; Define the compiler passes to be used by interp-tests and the grader
