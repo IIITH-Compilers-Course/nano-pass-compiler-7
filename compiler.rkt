@@ -88,12 +88,13 @@
     [(Begin es exp) (Begin (for/list ([e es]) (shrink-exp e)) (shrink-exp exp))]
     [(WhileLoop e1 e2) (WhileLoop (shrink-exp e1) (shrink-exp e2))]
     [(HasType exp type) (HasType (shrink-exp exp) type)]
+    [(Def flabel fvar freturn info exp) (Def flabel fvar freturn info (shrink-exp exp))]
     [_ exp]))
 
 (define (shrink p)
   (match p
     ; [(Program info e) (Program info (shrink-exp e))]
-    [(ProgramDefsExp info defs exp) (ProgramDefs info (append defs (list (Def 'main '() 'Integer '() (shrink-exp exp)))))]))
+    [(ProgramDefsExp info defs exp) (ProgramDefs info (for/list ([e (append defs (list (Def 'main '() 'Integer '() exp)))]) (shrink-exp e)))]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; HW1 Passes
@@ -115,6 +116,7 @@
       [(Begin es exp) (Begin (for/list ([e es]) ((uniquify-exp env) e)) ((uniquify-exp env) exp))]
       [(WhileLoop e1 e2) (WhileLoop ((uniquify-exp env) e1) ((uniquify-exp env) e2))]
       [(HasType exp type) (HasType ((uniquify-exp env) exp) type)]
+      [(Def fname fvar freturn info exp) (Def ())]
     )
   )
 )
@@ -122,7 +124,7 @@
 ;; uniquify : R1 -> R1
 (define (uniquify p)
   (match p
-    [(Program info e) (Program info ((uniquify-exp '()) e))]
+    [(ProgramDefs info defs) (ProgramDefs info (for/list ([e defs]) ((uniquify-exp '()) e)))]
   )
 )
 
@@ -664,7 +666,7 @@ ret)
 (define compiler-passes `(
   ; ("partial evaluator", pe-Lint, interp-Lvar)
   ("shrink", shrink, interp-Lfun, type-check-Lfun)
-  ; ("uniquify" ,uniquify ,interp-Lvec-prime, type-check-Lvec)	
+  ("uniquify" ,uniquify ,interp-Lfun, type-check-Lfun)	
   ; ("expose allocation", expose-allocation, interp-Lvec-prime, type-check-Lvec)	
   ; ("uncover get!", uncover-get!, interp-Lvec-prime, type-check-Lvec)
   ; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvec-prime, type-check-Lvec)
