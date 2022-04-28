@@ -680,7 +680,6 @@ ret)
   (define reg-idx-end (- (- (length all-registers)) 1))
   (define colors (make-hash (append (for/list ([reg all-registers] [idx (in-range -1 reg-idx-end -1)] #:when (has-vertex? graph reg)) (cons reg idx)) (list (cons (ByteReg 'al) reg-idx-end)))))
   (define available-regs (for/list ([reg all-registers] #:when (not (has-vertex? graph reg))) reg))
-  (displayln available-regs)
   (define nodes (make-hash))
   (define handles (make-hash))
   (define pnode>=? (lambda (x y) (>= (set-count (hash-ref nodes x)) (set-count (hash-ref nodes y)))))
@@ -729,7 +728,7 @@ ret)
 (define (allocate-reg-func def) (match def
   [(Def a b c info body) 
     (define var-locs (let ([g (dict-ref info 'conflicts)]) (color-graph g (get-vertices g) (dict-ref info 'locals-types))))
-    (define new-info (append (list (cons 'rootstack-space (calculate-hidden-stack-space (hash->list var-locs) (dict-ref info 'locals-types))) (cons 'stack-space (calculate-stack-space (hash->list var-locs) (dict-ref info 'locals-types)))) info))
+    (define new-info (dict-set (dict-set (dict-set info 'stack-space (calculate-stack-space (hash->list var-locs) (dict-ref info 'locals-types))) 'rootstack-space (calculate-hidden-stack-space (hash->list var-locs) (dict-ref info 'locals-types))) 'available-regs (for/list ([var-pair (hash->list var-locs)] #:when (Reg? (cdr var-pair))) (cdr var-pair))))
     (Def a b c new-info (for/list ([func body]) (cons (car func) (assign-homes-int (cdr func) var-locs))))
 ]))
  
@@ -765,18 +764,18 @@ ret)
 
 
 ;; Prelude and Conclusion
-(define (conclusion-instructions stack-space rootstack-space jmp-lbl) (append (list
+(define (conclusion-instructions stack-space rootstack-space available-regs jmp-lbl) (append (list
   (Instr 'addq (list (Imm stack-space) (Reg 'rsp)))
-) (for/list ([reg caller-saved]) (Instr 'popq (list reg))) (list
+) (for/list ([reg available-regs]) (Instr 'popq (list reg))) (list
   (Instr 'subq (list (Imm rootstack-space) (Reg 'r15)))
   (Instr 'popq (list (Reg 'rbp)))
   (if jmp-lbl (IndirectJmp jmp-lbl) (Retq))
 )))
 
-(define (main-instructions stack-space rootstack-space fname) (append (list
+(define (main-instructions stack-space rootstack-space available-regs fname) (append (list
   (Instr 'pushq (list (Reg 'rbp)))
   (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
-) (for/list ([reg caller-saved]) (Instr 'pushq (list reg))) 
+) (for/list ([reg available-regs]) (Instr 'pushq (list reg))) 
 (list (Instr 'subq (list (Imm stack-space) (Reg 'rsp)))) 
 (if (not (eq? fname 'main)) '() (list
   (Instr 'movq (list (Imm 65536) (Reg 'rdi)))
@@ -787,21 +786,25 @@ ret)
 (for/list ([idx (in-range rootstack-space)]) (Instr 'movq (list (Imm 0) (Deref 'r15 idx))))
 (list (Jmp (string->symbol (string-append (symbol->string fname) "start"))))))
 
-(define (pnc-process-instr cmd-list stack-space rootstack-space)
+(define (pnc-process-instr cmd-list stack-space rootstack-space available-regs)
   (cond [(empty? cmd-list) '()]
         [else (match (car cmd-list)
-          [(TailJmp lbl arity) (append (conclusion-instructions stack-space rootstack-space lbl) (pnc-process-instr (cdr cmd-list) stack-space rootstack-space))]
-          [_ (append (list (car cmd-list)) (pnc-process-instr (cdr cmd-list) stack-space rootstack-space))]
+          [(TailJmp lbl arity) (append (conclusion-instructions stack-space rootstack-space available-regs lbl) (pnc-process-instr (cdr cmd-list) stack-space rootstack-space available-regs))]
+          [_ (append (list (car cmd-list)) (pnc-process-instr (cdr cmd-list) stack-space rootstack-space available-regs))]
         )]))
 
 (define (pnc-func fname info body)
   (define stack-space (dict-ref info 'stack-space))
   (define rootstack-space (dict-ref info 'rootstack-space))
+  (define available-regs (dict-ref info 'available-regs))
   (append
-    (list (cons fname (Block '() (main-instructions stack-space rootstack-space fname))))
-    (for/list ([block-pair body]) (match (cdr block-pair) [(Block i instr) (cons (car block-pair) (Block i (pnc-process-instr instr stack-space rootstack-space)))]))
-    (list (cons (string->symbol (string-append (symbol->string fname) "conclusion")) (Block '() (conclusion-instructions stack-space rootstack-space #f))))
+    (list (cons fname (Block '() (main-instructions stack-space rootstack-space available-regs fname))))
+    (for/list ([block-pair body]) (match (cdr block-pair) [(Block i instr) (cons (car block-pair) (Block i (pnc-process-instr instr stack-space rootstack-space available-regs)))]))
+    (list (cons (string->symbol (string-append (symbol->string fname) "conclusion")) (Block '() (conclusion-instructions stack-space rootstack-space available-regs #f))))
 ))
+
+; (define (prelude-and-conclusion p) (match p
+;   [(ProgramDefs info defs) (ProgramDefs info (for/list ([def defs]) (match def [(Def fname b c info body) (Def fname b c info (pnc-func fname info body))])))]))
 
 (define (prelude-and-conclusion p) (match p
   [(ProgramDefs info defs) (X86Program info (append* (for/list ([def defs]) (match def [(Def fname b c info body) (pnc-func fname info body)]))))]))
@@ -825,5 +828,5 @@ ret)
   ("build interference", build-interference, interp-x86-3)
   ("allocate registers", allocate-registers, interp-x86-3)
   ("patch instructions" ,patch-instructions ,interp-x86-3)
-  ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-3)
+  ("prelude-and-conclusion" ,prelude-and-conclusion, #f)
 ))
