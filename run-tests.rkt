@@ -15,6 +15,7 @@
 (require "type-check-Lvec.rkt")
 (require "interp-Cfun.rkt")
 (require "interp-Lfun.rkt")
+(require "type-check-Lfun.rkt")
 (debug-level 1)
 (AST-output-syntax 'concrete-syntax)
 
@@ -35,7 +36,7 @@
 
 ; (interp-tests "var" #f compiler-passes interp-Lvar "var_test" (tests-for "var"))
 ; (interp-tests "vectors" type-check-Lvec compiler-passes interp-Lvec-prime "vectors_test" (tests-for "vectors"))
-(interp-tests "functions" #f compiler-passes interp-Lfun "functions_test" (tests-for "functions"))
+(interp-tests "functions" type-check-Lfun compiler-passes interp-Lfun "functions_test" (tests-for "functions"))
 
 ;; Uncomment the following when all the passes are complete to
 ;; test the final x86 code.
